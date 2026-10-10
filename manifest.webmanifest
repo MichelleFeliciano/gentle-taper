@@ -1,0 +1,15 @@
+{
+  "name": "Gentle Taper",
+  "short_name": "Taper",
+  "description": "A gentle, private caffeine taper tracker.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fff6f3",
+  "theme_color": "#f3c9d3",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

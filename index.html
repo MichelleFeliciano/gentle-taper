@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gentle Taper</title>
+<meta name="theme-color" content="#f3c9d3">
+<meta name="description" content="A gentle, private caffeine taper tracker.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gentle Taper">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="vine vine-l" aria-hidden="true"></div>
+<div class="vine vine-r" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="top-vine" aria-hidden="true"></div>
+  <h1 id="title">Gentle Taper</h1>
+  <p id="subtitle"></p>
+</header>
+
+<main id="app" aria-live="polite"></main>
+
+<nav class="tabs" id="tabs" aria-label="Main">
+  <button data-view="today" aria-label="Today">
+    <svg viewBox="0 0 24 24"><path d="M5 19c0-8 5-13 14-14 0 9-5 14-14 14Z"/><path d="M5 19c3-4 6-7 10-9"/></svg><span>Today</span>
+  </button>
+  <button data-view="plan" aria-label="Plan">
+    <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="4"/><path d="M8 3v4M16 3v4M4 10h16"/></svg><span>Plan</span>
+  </button>
+  <button data-view="progress" aria-label="Progress">
+    <svg viewBox="0 0 24 24"><path d="M4 18c3-1 4-6 7-6s3 4 6 2 3-6 3-8"/><path d="M4 21h16"/></svg><span>Progress</span>
+  </button>
+  <button data-view="settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg><span>Settings</span>
+  </button>
+</nav>
+
+<div id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>
