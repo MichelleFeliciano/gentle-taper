@@ -7,14 +7,17 @@ const SYMS = [
   ['nausea', 'Nausea'], ['focus', 'Trouble focusing'], ['mood', 'Low mood'],
 ];
 const SEV = ['None', 'Mild', 'Moderate', 'Strong'];
-const SYM_COLORS = ['#e39aab', '#6c8d68', '#8f7bb8', '#d9a84f', '#5f9ea0', '#c9677f'];
+const TYPES = ['Soda', 'Coffee', 'Tea', 'Energy drink', 'Sparkling water', 'Other'];
+const TYPE_MG = { 'Soda': 40, 'Coffee': 95, 'Tea': 47, 'Energy drink': 80, 'Sparkling water': 0, 'Other': 0 };
+const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Shot', 'Glass'];
+const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function defaults() {
-  return { plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, presets: [
-    { id: 'soda', name: 'Soda bottle (20 oz)', mg: 57 },
-    { id: 'coffee', name: 'Coffee (8 oz cup)', mg: 95 },
-    { id: 'energy', name: 'Energy drink', mg: 80 },
-    { id: 'tea', name: 'Tea (8 oz cup)', mg: 47 },
+  return { plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', presets: [
+    { id: 'soda', name: 'Soda', type: 'Soda', container: 'Bottle', oz: 20, mg: 57, fav: true },
+    { id: 'coffee', name: 'Coffee', type: 'Coffee', container: 'Cup', oz: 8, mg: 95, fav: true },
+    { id: 'energy', name: 'Energy drink', type: 'Energy drink', container: 'Can', oz: 16, mg: 160, fav: false },
+    { id: 'tea', name: 'Tea', type: 'Tea', container: 'Cup', oz: 8, mg: 47, fav: false },
   ] } };
 }
 function load() {
@@ -70,7 +73,7 @@ function target(date) {
 }
 
 /* ---------- ui state ---------- */
-const ui = { view: 'today', date: today(), range: 14, symSel: new Set(['avg']), showDecaf: false };
+const ui = { newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']), showDecaf: false };
 
 /* ---------- decoration ---------- */
 function vineSVG(horizontal) {
@@ -113,7 +116,7 @@ function setDrink(d, p, delta) {
   const L = Object.assign({ caf: 0, decaf: 0 }, S.logs[d]); const dr = Object.assign({}, L.drinks);
   const cur = dr[p.id] || { n: 0, mg: p.mg, name: p.name };
   const n = clamp(cur.n + delta, 0, 99);
-  if (n) dr[p.id] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name }; else delete dr[p.id];
+  if (n) dr[p.id] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name, type: p.type || '', container: p.container || '' }; else delete dr[p.id];
   setLog(d, { drinks: dr });
 }
 function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); }
@@ -166,14 +169,10 @@ function vToday() {
     </div>
     ${hero}
     <div class="card"><h2>Cans I had</h2>
-      <div class="counter"><div class="name">Caffeinated<small>counts toward the taper</small></div>${stepper('caf', caf)}</div>
+      <div class="counter"><div class="name">Caffeinated cans<small>quick count, no details</small></div>${stepper('caf', caf)}</div>
       <div class="counter"><div class="name">Caffeine-free<small>just for the record</small></div>${stepper('dec', dec, 'sage')}</div>
     </div>
-    <div class="card"><h2>Other drinks</h2>
-      <p class="muted" style="margin-top:-4px">Bottles, coffee and more — they count toward your target by caffeine amount.</p>
-      ${S.settings.presets.map(p => `<div class="counter"><div class="name">${esc(p.name)}<small>${p.mg} mg each</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`)}</div>`).join('')}
-      <div class="totals"><b>${mg} mg</b> caffeine today<br><span class="muted">≈ ${n1(tot)} can-equivalents${t != null ? ` · target ${t}` : ''}</span></div>
-    </div>
+    ${drinksCard(d, t)}
     <div class="card"><h2>How am I feeling?</h2>
       ${SYMS.map(([k, name]) => `<div class="sym"><div class="nm">${name}</div>
         <div class="seg">${SEV.map((s, v) => `<button data-act="sev" data-k="${k}" data-v="${v}" class="${(Y[k] ?? 0) === v ? 'on' : ''}">${s}</button>`).join('')}</div></div>`).join('')}
@@ -181,6 +180,35 @@ function vToday() {
       <textarea id="notes" placeholder="Anything worth remembering…">${esc(Y.notes || '')}</textarea>
     </div>
     <button class="btn rose block" data-act="savecheck">${L && Y.done ? 'Update check-in' : 'Save today’s check-in'}</button>`;
+}
+
+const isFav = p => p.fav !== false;
+const drinkLine = p => [p.type, p.container, p.oz ? p.oz + ' oz' : '', p.mg + ' mg'].filter(Boolean).join(' · ');
+function drinkRow(p, dr) {
+  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-label="Toggle favorite">★</button>${esc(p.name)}</span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`)}</div>`;
+}
+function drinksCard(d, t) {
+  const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets;
+  const favs = P.filter(isFav), others = P.filter(p => !isFav(p));
+  const open = ui.moreOpen || others.some(p => dr[p.id]);
+  const opt = (arr, sel) => arr.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
+  const form = ui.newOpen ? `<div class="newdrink">
+      <label class="f" for="nd-name">What is it?</label>
+      <input id="nd-name" type="text" placeholder="e.g. Diet Coke, iced latte" maxlength="40">
+      <div class="two"><div><label class="f" for="nd-type">Type</label><select id="nd-type">${opt(TYPES, 'Soda')}</select></div>
+        <div><label class="f" for="nd-cont">Container</label><select id="nd-cont">${opt(CONTAINERS, 'Can')}</select></div></div>
+      <div class="two"><div><label class="f" for="nd-oz">Size (oz, optional)</label><input id="nd-oz" type="number" inputmode="decimal" min="0" max="128" placeholder="12"></div>
+        <div><label class="f" for="nd-mg">Caffeine (mg)</label><input id="nd-mg" type="number" inputmode="numeric" min="0" max="1000" value="${TYPE_MG.Soda}"></div></div>
+      <div class="switch"><label for="nd-fav">Add to my favorites</label><input id="nd-fav" type="checkbox" checked></div>
+      <div class="btns"><button class="btn rose" data-act="savedrink">Save &amp; log one</button><button class="btn ghost" data-act="newdrink">Cancel</button></div>
+    </div>` : '';
+  return `<div class="card"><h2>Drinks</h2>
+      <p class="muted" style="margin-top:-4px">Tap ★ to pin a drink as a favorite. Each counts toward your target by caffeine amount.</p>
+      ${favs.length ? favs.map(p => drinkRow(p, dr)).join('') : '<p class="muted">No favorites yet — star a drink below or add a new one.</p>'}
+      ${others.length ? `<details class="more" ${open ? 'open' : ''}><summary>More drinks (${others.length})</summary>${others.map(p => drinkRow(p, dr)).join('')}</details>` : ''}
+      ${ui.newOpen ? form : '<div class="btns"><button class="btn ghost" data-act="newdrink">+ New drink</button></div>'}
+      <div class="totals"><b>${totalMg(d)} mg</b> caffeine today<br><span class="muted">≈ ${n1(total(d) ?? 0)} can-equivalents${t != null ? ` · target ${t}` : ''}</span></div>
+    </div>`;
 }
 
 function vPlan() {
@@ -234,7 +262,7 @@ function chart({ dates, series, ymax }) {
   const y = v => T + ph * (1 - v / ymax);
   const step = ymax <= 4 ? 1 : Math.ceil(ymax / 4);
   let g = '';
-  for (let v = 0; v <= ymax; v += step) g += `<line x1="${Lm}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="#efd9de" stroke-width="1"/><text x="${Lm - 6}" y="${y(v) + 3}" text-anchor="end">${v}</text>`;
+  for (let v = 0; v <= ymax; v += step) g += `<line x1="${Lm}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${cv('--line')}" stroke-width="1"/><text x="${Lm - 6}" y="${y(v) + 3}" text-anchor="end">${v}</text>`;
   const lab = Math.min(n, 5);
   for (let k = 0; k < lab; k++) {
     const i = lab === 1 ? 0 : Math.round(k * (n - 1) / (lab - 1));
@@ -273,10 +301,10 @@ function vProgress() {
   const ymaxC = Math.max(2, ...dates.map(d => Math.max(target(d) ?? 0, total(d) ?? 0, ui.showDecaf ? S.logs[d]?.decaf ?? 0 : 0)));
   const ymaxI = Math.ceil(ymaxC);
   const cs = [
-    { color: '#c9a3d8', dash: true, w: 2.5, vals: dates.map(d => target(d)) },
-    { color: '#6c8d68', dots: true, vals: dates.map(d => total(d)) },
+    { color: cv('--c-target'), dash: true, w: 2.5, vals: dates.map(d => target(d)) },
+    { color: cv('--c-caf'), dots: true, vals: dates.map(d => total(d)) },
   ];
-  if (ui.showDecaf) cs.push({ color: '#d9a84f', dots: true, w: 1.8, vals: dates.map(d => S.logs[d]?.decaf ?? null) });
+  if (ui.showDecaf) cs.push({ color: cv('--c-decaf'), dots: true, w: 1.8, vals: dates.map(d => S.logs[d]?.decaf ?? null) });
 
   // stats
   const logged = Object.keys(S.logs).filter(d => target(d) != null);
@@ -296,7 +324,7 @@ function vProgress() {
   const keys = [...ui.symSel];
   const sSeries = keys.map(k => {
     const idx = k === 'avg' ? 0 : SYMS.findIndex(s => s[0] === k) + 1;
-    return { color: k === 'avg' ? '#8f7bb8' : SYM_COLORS[idx - 1], dots: true, w: k === 'avg' ? 3 : 2, vals: dates.map(d => symVal(d, k)) };
+    return { color: k === 'avg' ? cv('--c-avg') : cv('--s' + (idx - 1)), dots: true, w: k === 'avg' ? 3 : 2, vals: dates.map(d => symVal(d, k)) };
   });
   const t = today();
   const wk = (from, to) => { const v = []; for (let i = from; i < to; i++) { const x = symVal(addDays(t, -i), 'avg'); if (x != null) v.push(x); } return avg(v); };
@@ -313,7 +341,7 @@ function vProgress() {
     <div class="chips">${ranges.map(([v, l]) => `<button class="chip ${ui.range === v ? 'on' : ''}" data-act="range" data-v="${v}">${l}</button>`).join('')}</div>
     <div class="card"><h2>Cans vs. target</h2>
       ${chart({ dates, series: cs, ymax: ymaxI })}
-      <div class="legend"><span><i class="dash" style="border-color:#c9a3d8"></i>Target</span><span><i style="border-color:#6c8d68"></i>Caffeinated (cans + drinks)</span>${ui.showDecaf ? '<span><i style="border-color:#d9a84f"></i>Caffeine-free</span>' : ''}</div>
+      <div class="legend"><span><i class="dash" style="border-color:${cv('--c-target')}"></i>Target</span><span><i style="border-color:${cv('--c-caf')}"></i>Caffeinated (cans + drinks)</span>${ui.showDecaf ? `<span><i style="border-color:${cv('--c-decaf')}"></i>Caffeine-free</span>` : ''}</div>
       <div class="chips" style="margin-top:10px"><button class="chip ${ui.showDecaf ? 'on' : ''}" data-act="decaf">Show caffeine-free</button></div>
     </div>
     <div class="card"><h2>Highlights</h2><div class="stats">
@@ -336,6 +364,9 @@ function vSettings() {
   const supported = 'Notification' in window;
   const perm = supported ? Notification.permission : 'unsupported';
   return `
+    <div class="card"><h2>Appearance</h2>
+      <div class="chips" style="margin-bottom:0">${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<button class="chip ${(st.theme || 'auto') === v ? 'on' : ''}" data-act="theme" data-v="${v}">${l}</button>`).join('')}</div>
+    </div>
     <div class="card"><h2>Daily reminder</h2>
       <div class="switch"><label for="remOn">Remind me to log</label><input id="remOn" type="checkbox" ${st.remind ? 'checked' : ''}></div>
       <label class="f" for="remTime">Reminder time</label>
@@ -350,10 +381,16 @@ function vSettings() {
       <p class="muted" style="margin-top:-4px">Used to turn drinks into can-equivalents. Adjust to match what you actually drink.</p>
       <label class="f" for="canMg">Caffeine in one can (mg)</label>
       <input id="canMg" type="number" inputmode="numeric" min="1" max="500" value="${st.canMg}">
-      <h3>Other drinks</h3>
-      ${st.presets.map(p => `<div class="preset"><input class="pname" data-pid="${esc(p.id)}" data-f="name" value="${esc(p.name)}" aria-label="Drink name">
-        <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-pid="${esc(p.id)}" data-f="mg" value="${p.mg}" aria-label="mg"><span class="muted">mg</span>
-        <button class="round" data-act="delpreset" data-id="${esc(p.id)}" aria-label="Remove">×</button></div>`).join('')}
+      <h3>My drinks</h3>
+      ${st.presets.map(p => `<div class="dedit">
+        <div class="preset"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-label="Toggle favorite">★</button>
+          <input class="pname" data-pid="${esc(p.id)}" data-f="name" value="${esc(p.name)}" aria-label="Drink name">
+          <button class="round" data-act="delpreset" data-id="${esc(p.id)}" aria-label="Remove">×</button></div>
+        <div class="preset"><select data-pid="${esc(p.id)}" data-f="type" aria-label="Type">${[...new Set([...TYPES, p.type].filter(Boolean))].map(x => `<option ${x === p.type ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+          <select data-pid="${esc(p.id)}" data-f="container" aria-label="Container">${[...new Set([...CONTAINERS, p.container].filter(Boolean))].map(x => `<option ${x === p.container ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
+        <div class="preset"><input class="pmg" type="number" inputmode="decimal" min="0" max="128" data-pid="${esc(p.id)}" data-f="oz" value="${p.oz ?? ''}" placeholder="oz" aria-label="Ounces"><span class="muted">oz</span>
+          <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-pid="${esc(p.id)}" data-f="mg" value="${p.mg}" aria-label="mg"><span class="muted">mg</span></div>
+      </div>`).join('')}
       <div class="btns"><button class="btn ghost" data-act="addpreset">+ Add a drink</button></div>
     </div>
     <div class="card"><h2>Your data</h2>
@@ -424,7 +461,18 @@ document.addEventListener('click', e => {
       p.targets[i] = clamp(p.targets[i] + (act === 'ed+' ? 1 : -1), 0, 30);
       save(); break;
     }
-    case 'addpreset': S.settings.presets.push({ id: 'p' + Date.now().toString(36), name: 'New drink', mg: 50 }); save(); break;
+    case 'addpreset': S.settings.presets.push({ id: 'p' + Date.now().toString(36), name: 'New drink', type: 'Other', container: 'Can', oz: null, mg: 50, fav: false }); save(); break;
+    case 'fav': { const pr = S.settings.presets.find(x => x.id === el.dataset.id); if (pr) { pr.fav = !isFav(pr); save(); } break; }
+    case 'newdrink': ui.newOpen = !ui.newOpen; break;
+    case 'savedrink': {
+      const name = document.getElementById('nd-name').value.trim();
+      if (!name) { toast('Give it a name first'); return; }
+      const oz = parseFloat(document.getElementById('nd-oz').value);
+      const pr = { id: 'p' + Date.now().toString(36), name, type: document.getElementById('nd-type').value, container: document.getElementById('nd-cont').value,
+        oz: oz > 0 ? oz : null, mg: clamp(parseInt(document.getElementById('nd-mg').value, 10) || 0, 0, 1000), fav: document.getElementById('nd-fav').checked };
+      S.settings.presets.push(pr); setDrink(d, pr, 1); ui.newOpen = false; toast(`Logged ${name}`); break;
+    }
+    case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
     case 'delpreset': S.settings.presets = S.settings.presets.filter(x => x.id !== el.dataset.id); save(); break;
     case 'testnotif': testNotif(); return;
     case 'ics': downloadICS(); return;
@@ -451,9 +499,17 @@ document.addEventListener('change', async e => {
     S.settings.lastNotified = ''; save(); scheduleTrigger(); render();
   } else if (t.id === 'canMg') {
     S.settings.canMg = clamp(parseInt(t.value, 10) || 40, 1, 500); save(); toast('Saved');
+  } else if (t.id === 'nd-type') {
+    document.getElementById('nd-mg').value = TYPE_MG[t.value] ?? 0;
   } else if (t.dataset.pid) {
-    const p = S.settings.presets.find(x => x.id === t.dataset.pid);
-    if (p) { if (t.dataset.f === 'mg') p.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); else p.name = t.value.trim() || 'Drink'; save(); toast('Saved'); }
+    const p = S.settings.presets.find(x => x.id === t.dataset.pid), f = t.dataset.f;
+    if (p) {
+      if (f === 'mg') p.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000);
+      else if (f === 'oz') p.oz = parseFloat(t.value) > 0 ? parseFloat(t.value) : null;
+      else if (f === 'name') p.name = t.value.trim() || 'Drink';
+      else p[f] = t.value;
+      save(); toast('Saved');
+    }
   } else if (t.id === 'remTime') {
     S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
@@ -523,7 +579,18 @@ function saveBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
+/* ---------- theme ---------- */
+function applyTheme() {
+  const pref = S.settings.theme || 'auto';
+  const dark = pref === 'dark' || (pref === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = dark ? '#2a1b22' : '#f3c9d3';
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyTheme(); render(); });
+document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) ui.moreOpen = e.target.open; }, true);
+
 /* ---------- boot ---------- */
+applyTheme();
 applyDecor();
 if (!S.plan) ui.view = 'plan';
 render();
