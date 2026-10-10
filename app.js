@@ -101,7 +101,7 @@ function target(date) {
 }
 
 /* ---------- ui state ---------- */
-const ui = { followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
+const ui = { openRestart: false, followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
 
 /* ---------- decoration ---------- */
 function vineSVG(horizontal) {
@@ -163,11 +163,73 @@ function checkMilestones() {
   const set = (k, v) => { if (!S.ms[k]) { S.ms[k] = v; save(); toast(MILESTONES.find(m => m[0] === k)[2]); } };
   if (st >= 7) set('s7', t);
   if (st >= 14) set('s14', t);
+  const pl = S.plan;
+  if (!pl.completedOn && !pl.pausedAt && pl.start <= t && planIdx(t) >= pl.targets.length - 1) { pl.completedOn = t; save(); toast('You reached the final day of your taper! 🌸'); }
   if (!S.ms.zero) {
     const z = Object.keys(S.logs).filter(d => d >= S.plan.start && d <= t && totalMg(d) === 0).sort()[0];
     if (z) set('zero', z);
   }
 }
+function bestStreak() {
+  const ds = Object.keys(S.logs).filter(d => target(d) != null).sort();
+  let best = 0, run = 0, prev = null;
+  for (const d of ds) {
+    if (totalMg(d) <= target(d)) { run = prev && run > 0 && diff(prev, d) === 1 ? run + 1 : 1; best = Math.max(best, run); prev = d; }
+    else { run = 0; prev = null; }
+  }
+  return best;
+}
+// Went over today's target? Offer to hold the level for a day instead of stepping down again.
+function slipAlert() {
+  const p = S.plan, t = today();
+  if (!p || p.pausedAt || p.completedOn || p.start > t || ui.date !== t || !S.logs[t]) return null;
+  const tg = target(t);
+  if (tg == null || tg <= 0 || planIdx(t) >= p.targets.length - 1) return null;
+  if (S.pace.slip && S.pace.slip >= t) return null;
+  const over = totalMg(t) - tg;
+  return over > 0 ? over : null;
+}
+// After the taper: gently notice if caffeine creeps back in.
+function maintAlert() {
+  const p = S.plan, t = today();
+  if (!p || !p.completedOn || ui.date !== t || (S.pace.maint && S.pace.maint >= t)) return false;
+  const days = Object.keys(S.logs).filter(d => d <= t && d >= addDays(t, -4)).sort().slice(-3);
+  return days.length >= 2 && days.filter(d => totalMg(d) > 0).length >= 2;
+}
+function weekStats(end) {
+  const days = Array.from({ length: 7 }, (_, i) => addDays(end, i - 6)), prev = days.map(d => addDays(d, -7));
+  const logged = days.filter(d => S.logs[d]), pl = prev.filter(d => S.logs[d]);
+  const sv = days.map(d => symVal(d, 'avg')).filter(x => x != null), psv = prev.map(d => symVal(d, 'avg')).filter(x => x != null);
+  const wv = days.map(d => S.water[d]).filter(x => x > 0), tracked = logged.filter(d => target(d) != null);
+  let best = null; logged.forEach(d => { if (best == null || totalMg(d) < totalMg(best)) best = d; });
+  return { n: logged.length, avgMg: logged.length ? Math.round(avg(logged.map(totalMg))) : null, prevAvg: pl.length ? Math.round(avg(pl.map(totalMg))) : null,
+    onT: tracked.filter(d => totalMg(d) <= target(d)).length, tracked: tracked.length, sym: sv.length ? avg(sv) : null, prevSym: psv.length ? avg(psv) : null,
+    water: wv.length ? avg(wv) : null, best };
+}
+function weekHtml(w) {
+  const li = [];
+  const dm = w.prevAvg != null ? w.avgMg - w.prevAvg : null;
+  li.push(`Average caffeine: <b>${w.avgMg} mg</b> a day${dm ? ` — ${Math.abs(dm)} mg ${dm < 0 ? 'lower' : 'higher'} than the week before` : ''}`);
+  if (w.tracked) li.push(`${w.onT} of ${w.tracked} logged days at or under target`);
+  if (w.sym != null) li.push(`Symptoms averaged ${w.sym.toFixed(1)} of 3${w.prevSym != null ? (w.sym < w.prevSym - .15 ? ' — easing 🌱' : w.sym > w.prevSym + .15 ? ' — a bit higher than the week before' : ' — steady') : ''}`);
+  if (w.water != null) li.push(`Water: about ${n1(w.water)} glasses a day`);
+  if (w.best) li.push(`Lightest day: ${nice(w.best)} (${totalMg(w.best)} mg)`);
+  return `<ul class="wk">${li.map(x => `<li>${x}</li>`).join('')}</ul>`;
+}
+function completeCard() {
+  const p = S.plan, days = diff(p.start, p.completedOn) + 1;
+  const zero = Object.keys(S.logs).filter(d => d >= p.start && totalMg(d) === 0).length;
+  const se = Object.keys(S.sym).filter(d => S.sym[d].done && d >= p.start).sort();
+  let symLine = '';
+  if (se.length >= 6) {
+    const a = avg(se.slice(0, 3).map(d => symVal(d, 'avg'))), b = avg(se.slice(-3).map(d => symVal(d, 'avg')));
+    symLine = b < a - .15 ? 'Your symptoms are lower than when you started.' : b > a + .15 ? 'Symptoms are a bit higher than at the start — they often settle with time.' : 'Symptoms are about where they were at the start.';
+  }
+  return `<div class="card note"><h2>You reached zero 🌸</h2>
+    <p>You brought ${p.targets[0]} mg a day down to zero over ${days} days.${zero ? ` ${zero} caffeine-free ${zero === 1 ? 'day' : 'days'} so far.` : ''} ${symLine}</p>
+    <p class="muted" style="margin:0">Keep logging if you like — I’ll gently let you know if caffeine creeps back in.</p></div>`;
+}
+
 // Suggest easing off when the last three check-ins have been rough.
 function paceAlert() {
   const p = S.plan, t = today();
@@ -212,7 +274,7 @@ function render() {
   snapshot();
   checkMilestones();
   const y = window.scrollY;
-  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === ui.view));
+  document.querySelectorAll('#tabs button').forEach(b => { const on = b.dataset.view === ui.view; b.classList.toggle('on', on); if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   const sub = document.getElementById('subtitle');
   const p = S.plan;
   sub.textContent = !p && S.baseline ? `Getting to know your habit · ${Math.min(baselineDays().length, 3)} of 3 days logged`
@@ -225,11 +287,11 @@ function render() {
   window.scrollTo(0, y);
 }
 
-function stepper(act, val, cls, extra = '') {
+function stepper(act, val, cls, extra = '', label = '') {
   return `<div class="stepper">
-    <button class="round" data-act="${act}-" ${extra} aria-label="less">−</button>
+    <button class="round" data-act="${act}-" ${extra} aria-label="${label ? 'One less ' + esc(label) : 'Less'}">−</button>
     <span class="n">${val}</span>
-    <button class="round plus ${cls || ''}" data-act="${act}+" ${extra} aria-label="more">+</button></div>`;
+    <button class="round plus ${cls || ''}" data-act="${act}+" ${extra} aria-label="${label ? 'One more ' + esc(label) : 'More'}">+</button></div>`;
 }
 
 function vToday() {
@@ -259,14 +321,14 @@ function vToday() {
     ${hero}
     ${alertCards()}
     <div class="card"><h2>Cans I had</h2>
-      <div class="counter"><div class="name">Caffeinated cans<small>quick count, no details</small></div>${stepper('caf', caf)}</div>
-      <div class="counter"><div class="name">Caffeine-free<small>just for the record</small></div>${stepper('dec', dec, 'sage')}</div>
+      <div class="counter"><div class="name">Caffeinated cans<small>quick count, no details</small></div>${stepper('caf', caf, '', '', 'caffeinated can')}</div>
+      <div class="counter"><div class="name">Caffeine-free<small>just for the record</small></div>${stepper('dec', dec, 'sage', '', 'caffeine-free can')}</div>
     </div>
     ${drinksCard(d, t)}
     ${loggedCard(d)}
     <div class="card"><h2>How am I feeling?</h2>
-      ${SYMS.map(([k, name]) => `<div class="sym"><div class="nm">${name}</div>
-        <div class="seg">${SEV.map((s, v) => `<button data-act="sev" data-k="${k}" data-v="${v}" class="${(Y[k] ?? 0) === v ? 'on' : ''}">${s}</button>`).join('')}</div></div>`).join('')}
+      ${SYMS.map(([k, name]) => `<div class="sym" role="group" aria-label="${name}"><div class="nm">${name}</div>
+        <div class="seg">${SEV.map((s, v) => `<button data-act="sev" data-k="${k}" data-v="${v}" aria-pressed="${(Y[k] ?? 0) === v}" aria-label="${name}: ${s}" class="${(Y[k] ?? 0) === v ? 'on' : ''}">${s}</button>`).join('')}</div></div>`).join('')}
       <label class="f" for="notes">Notes (optional)</label>
       <textarea id="notes" placeholder="Anything worth remembering…">${esc(Y.notes || '')}</textarea>
     </div>
@@ -281,6 +343,19 @@ function alertCards() {
     <p>Your symptoms have been rough lately (about ${pa.m.toFixed(1)} out of 3). That’s common while tapering — you don’t have to keep stepping down on schedule.</p>
     <div class="btns"><button class="btn rose" data-act="hold">Hold steady 3 days</button><button class="btn ghost" data-act="pause">Pause taper</button><button class="btn ghost" data-act="snooze">Not now</button></div>
     <p class="muted" style="margin:10px 0 0">If symptoms ever feel severe, please check in with a doctor.</p></div>`;
+  if (S.plan?.completedOn && diff(S.plan.completedOn, t) <= 7) h += completeCard();
+  if (!pa) {
+    const over = slipAlert();
+    if (over) h += `<div class="card alert"><h2>A bumpy day is okay</h2>
+      <p>You’re ${over} mg over today’s target. Slips are a normal part of tapering — they don’t undo your progress. Want to hold today’s level for one more day before stepping down?</p>
+      <div class="btns"><button class="btn rose" data-act="sliphold">Hold one extra day</button><button class="btn ghost" data-act="slipkeep">Keep going</button></div></div>`;
+  }
+  if (maintAlert()) h += `<div class="card alert"><h2>Caffeine crept back in</h2>
+    <p>You’ve logged caffeine on a few recent days. That happens! If you’d like to settle back to zero, a short new taper can help.</p>
+    <div class="btns"><button class="btn rose" data-act="newtaper">Plan a new taper</button><button class="btn ghost" data-act="maintok">I’m fine</button></div></div>`;
+  const wk = weekStats(t);
+  if (ui.date === t && wk.n >= 4 && (!S.pace.weekly || diff(S.pace.weekly, t) >= 7))
+    h += `<div class="card note"><h2>Your week so far</h2>${weekHtml(wk)}<div class="btns"><button class="btn ghost" data-act="weekok">Got it</button></div></div>`;
   const exp = S.settings.lastExport, snooze = S.settings.nudgeSnooze;
   if (ui.date === t && Object.keys(S.logs).length >= 3 && (!exp || diff(exp, t) >= 7) && !(snooze && snooze >= t))
     h += `<div class="card note"><b>Save a backup?</b><br>${exp ? `It’s been ${diff(exp, t)} days since you exported one.` : 'You haven’t exported a copy yet.'} Saving one to Files or Drive keeps your history safe.
@@ -296,11 +371,11 @@ function loggedCard(d) {
     ${L.caf ? `<div class="lrow"><div class="lname"><b>Caffeinated cans</b><small>${L.caf} × ${S.settings.canMg} mg</small></div><button class="round" data-act="delcans" aria-label="Remove cans">×</button></div>` : ''}
     ${ent.map(([id, e]) => `<div class="lrow"><div class="lname"><input data-did="${esc(id)}" data-f="name" value="${esc(e.name)}" aria-label="Name"><small>${e.n} × ${e.mg} mg = ${e.n * e.mg} mg</small></div>
       <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-did="${esc(id)}" data-f="mg" value="${e.mg}" aria-label="mg each"><span class="muted">mg</span>
-      ${stepper('dr', e.n, '', `data-id="${esc(id)}"`)}
+      ${stepper('dr', e.n, '', `data-id="${esc(id)}"`, e.name)}
       <button class="round" data-act="deldrink" data-id="${esc(id)}" aria-label="Remove">×</button></div>`).join('')}
     <div class="btns"><button class="btn danger" data-act="delday">Clear this day’s drinks</button></div></div>`;
 }
-const waterRow = d => `<div class="counter"><div class="name">Water<small>glasses — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage')}</div>`;
+const waterRow = d => `<div class="counter"><div class="name">Water<small>glasses — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage', '', 'glass of water')}</div>`;
 function lastCafRow(d) {
   if (totalMg(d) === 0) return '';
   const lc = S.logs[d]?.lastCaf || '', cut = S.settings.cutoff;
@@ -311,7 +386,7 @@ function lastCafRow(d) {
 const isFav = p => p.fav !== false;
 const drinkLine = p => [p.type, p.container, p.oz ? p.oz + ' oz' : '', p.mg + ' mg'].filter(Boolean).join(' · ');
 function drinkRow(p, dr) {
-  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-label="Toggle favorite">★</button>${esc(p.name)}</span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`)}</div>`;
+  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>${esc(p.name)}</span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`, p.name)}</div>`;
 }
 function drinksCard(d, t) {
   const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets, mg = totalMg(d);
@@ -357,11 +432,12 @@ function vPlan() {
     return `<div class="sched ${past ? 'past' : ''} ${now ? 'now' : ''}">
       <div class="dl">Day ${i + 1}<small>${short(date)}${now ? ' · today' : ''}</small></div>
       ${past ? `<span class="n" style="font-family:var(--font-head);font-size:22px">${S.hist[date] ?? v}</span>`
-        : `<div class="stepper"><button class="round" data-act="ed-" data-i="${i}">−</button><span class="n">${v}</span><button class="round plus" data-act="ed+" data-i="${i}">+</button></div>`}
+        : `<div class="stepper"><button class="round" data-act="ed-" data-i="${i}" aria-label="10 mg less on day ${i + 1}">−</button><span class="n">${v}</span><button class="round plus" data-act="ed+" data-i="${i}" aria-label="10 mg more on day ${i + 1}">+</button></div>`}
     </div>`;
   }).join('');
   const cur = target(t) ?? p.targets[0];
   return `
+    ${p.completedOn ? completeCard() : ''}
     <div class="card">
       <div class="row"><h2 style="margin:0">Your taper</h2>${p.pausedAt ? '<span class="pill">Paused</span>' : '<span class="pill sage">Active</span>'}</div>
       <p class="muted">${p.targets[0]} mg → 0 over ${p.targets.length} days · started ${short(p.start)}${p.fromBaseline ? ' · based on your 3-day baseline' : ''}${p.pausedAt ? ` · paused since ${short(p.pausedAt)}` : ''}</p>
@@ -377,7 +453,7 @@ function vPlan() {
       <input id="adjDays" type="number" inputmode="numeric" min="1" max="365" value="${Math.max(p.targets.length - 1 - (ti ?? 0), 1)}">
       <div class="btns"><button class="btn" data-act="adjust">Apply</button></div>
     </details>
-    <details class="card"><summary>Restart a new taper</summary>
+    <details class="card" ${ui.openRestart ? 'open' : ''}><summary>Restart a new taper</summary>
       <p class="muted">Begins a fresh plan today. All past logs and symptom history are kept.</p>
       ${setupForm()}
     </details>
@@ -395,7 +471,7 @@ function setupForm() {
 }
 
 /* ---- charts ---- */
-function chart({ dates, series, ymax }) {
+function chart({ dates, series, ymax, label }) {
   const W = 340, H = 190, Lm = 26, R = 10, T = 10, B = 24, pw = W - Lm - R, ph = H - T - B, n = dates.length;
   const x = i => Lm + (n < 2 ? pw / 2 : pw * i / (n - 1));
   const y = v => T + ph * (1 - v / ymax);
@@ -416,7 +492,7 @@ function chart({ dates, series, ymax }) {
     });
     return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.w || 2.5}" stroke-linecap="round" stroke-linejoin="round" ${s.dash ? 'stroke-dasharray="5 5"' : ''}/>${dots}`;
   }).join('');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${g}${lines}</svg>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label || 'Chart')}">${g}${lines}</svg>`;
 }
 function rangeDates() {
   const t = today();
@@ -451,7 +527,7 @@ function vProgress() {
   const onTrack = logged.filter(d => totalMg(d) <= target(d)).length;
   const recent = Object.keys(S.logs).sort().slice(-7);
   const avgMg = recent.length ? Math.round(avg(recent.map(totalMg))) : 0;
-  const streak = streakNow(), cut = cutoffStreak();
+  const streak = streakNow(), cut = cutoffStreak(), longest = bestStreak(), week = weekStats(today());
   const zeroDays = Object.keys(S.logs).filter(d => totalMg(d) === 0).length;
   const wd = Object.keys(S.water).filter(d => S.water[d] > 0).sort().slice(-7);
   const avgWater = wd.length ? n1(avg(wd.map(d => S.water[d]))) : '—';
@@ -474,9 +550,10 @@ function vProgress() {
   } else if (thisW != null) trend = `Average symptom level this week: ${thisW.toFixed(1)} of 3.`;
 
   return `
-    <div class="chips">${ranges.map(([v, l]) => `<button class="chip ${ui.range === v ? 'on' : ''}" data-act="range" data-v="${v}">${l}</button>`).join('')}</div>
+    <div class="chips">${ranges.map(([v, l]) => `<button class="chip ${ui.range === v ? 'on' : ''}" data-act="range" data-v="${v}" aria-pressed="${ui.range === v}">${l}</button>`).join('')}</div>
+    ${week.n ? `<div class="card"><h2>This week</h2>${weekHtml(week)}</div>` : ''}
     <div class="card"><h2>Caffeine vs. target (mg)</h2>
-      ${chart({ dates, series: cs, ymax: ymaxI })}
+      ${chart({ dates, series: cs, ymax: ymaxI, label: `Caffeine in milligrams against your target over ${dates.length} days` })}
       <div class="legend"><span><i class="dash" style="border-color:${cv('--c-target')}"></i>Target</span><span><i style="border-color:${cv('--c-caf')}"></i>Caffeine you had</span></div>
     </div>
     <div class="card"><h2>Highlights</h2><div class="stats">
@@ -487,16 +564,18 @@ function vProgress() {
       <div class="stat"><b>${avgMg}</b><span>avg mg caffeine / day (last 7 logged)</span></div>
       <div class="stat"><b>${cut}</b><span>day streak, last caffeine before ${fmtTime(S.settings.cutoff)}</span></div>
       <div class="stat"><b>${zeroDays}</b><span>caffeine-free days</span></div>
-      <div class="stat"><b>${avgWater}</b><span>avg glasses of water / day</span></div></div></div>
+      <div class="stat"><b>${avgWater}</b><span>avg glasses of water / day</span></div>
+      <div class="stat"><b>${longest}</b><span>longest streak on target</span></div>
+      <div class="stat"><b>${S.plan ? Math.max(diff(S.plan.start, today()) + 1, 0) : 0}</b><span>days since your taper started</span></div></div></div>
     <div class="card"><h2>Milestones</h2>
       ${MILESTONES.map(([k, label]) => S.ms[k] ? `<div class="ms done">🌿 ${esc(label)} <span class="muted">· ${short(S.ms[k])}</span></div>`
         : `<div class="ms">○ ${esc(label)}${k !== 'zero' ? ` <span class="muted">· ${Math.min(streak, k === 's7' ? 7 : 14)} / ${k === 's7' ? 7 : 14}</span>` : ''}</div>`).join('')}
     </div>
     <div class="card"><h2>Symptoms over time</h2>
       <p class="muted" style="margin-top:-4px">0 = none, 3 = strong. Lower is better.</p>
-      <div class="chips"><button class="chip ${ui.symSel.has('avg') ? 'on' : ''}" data-act="symsel" data-k="avg">Overall</button>
-        ${SYMS.map(([k, n]) => `<button class="chip ${ui.symSel.has(k) ? 'on' : ''}" data-act="symsel" data-k="${k}">${n}</button>`).join('')}</div>
-      ${chart({ dates, series: sSeries, ymax: 3 })}
+      <div class="chips"><button class="chip ${ui.symSel.has('avg') ? 'on' : ''}" data-act="symsel" data-k="avg" aria-pressed="${ui.symSel.has('avg')}">Overall</button>
+        ${SYMS.map(([k, n]) => `<button class="chip ${ui.symSel.has(k) ? 'on' : ''}" data-act="symsel" data-k="${k}" aria-pressed="${ui.symSel.has(k)}">${n}</button>`).join('')}</div>
+      ${chart({ dates, series: sSeries, ymax: 3, label: `Symptom severity from 0 to 3 over ${dates.length} days` })}
       <p class="status" style="font-size:15px">${trend}</p>
     </div>`;
 }
@@ -507,7 +586,7 @@ function vSettings() {
   const perm = supported ? Notification.permission : 'unsupported';
   return `
     <div class="card"><h2>Appearance</h2>
-      <div class="chips" style="margin-bottom:0">${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<button class="chip ${(st.theme || 'auto') === v ? 'on' : ''}" data-act="theme" data-v="${v}">${l}</button>`).join('')}</div>
+      <div class="chips" style="margin-bottom:0">${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<button class="chip ${(st.theme || 'auto') === v ? 'on' : ''}" data-act="theme" data-v="${v}" aria-pressed="${(st.theme || 'auto') === v}">${l}</button>`).join('')}</div>
     </div>
     <div class="card"><h2>Daily reminder</h2>
       <div class="switch"><label for="remOn">Remind me to log</label><input id="remOn" type="checkbox" ${st.remind ? 'checked' : ''}></div>
@@ -528,7 +607,7 @@ function vSettings() {
       <p class="muted" style="margin:4px 0 0">Used for the “last caffeine before…” streak. Many people sleep better with none after early afternoon.</p>
       <h3>My drinks</h3>
       ${st.presets.map(p => `<div class="dedit">
-        <div class="preset"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-label="Toggle favorite">★</button>
+        <div class="preset"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>
           <input class="pname" data-pid="${esc(p.id)}" data-f="name" value="${esc(p.name)}" aria-label="Drink name">
           <button class="round" data-act="delpreset" data-id="${esc(p.id)}" aria-label="Remove">×</button></div>
         <div class="preset"><select data-pid="${esc(p.id)}" data-f="type" aria-label="Type">${[...new Set([...TYPES, p.type].filter(Boolean))].map(x => `<option ${x === p.type ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
@@ -548,13 +627,16 @@ function vSettings() {
     <div class="card"><h2>Erase</h2>
       <p class="muted" style="margin-top:-4px">Removes all plans, logs and symptoms. A safety copy is kept so you can undo it.</p>
       <div class="btns"><button class="btn danger" data-act="wipe">Erase everything</button></div>
+    </div>
+    <div class="card"><h2>About</h2>
+      <p class="muted" style="margin-top:-4px">Gentle Taper is a personal tracking tool, not medical advice. Suggestions like “hold steady” are general nudges based on what you log. Stopping caffeine can cause headaches, fatigue and low mood; if symptoms are severe, don’t ease, or you have a heart condition or take medication, please talk with a doctor or pharmacist.</p>
     </div>`;
 }
 
 /* ---------- events ---------- */
 document.addEventListener('click', e => {
   const tab = e.target.closest('#tabs button');
-  if (tab) { ui.view = tab.dataset.view; render(); window.scrollTo(0, 0); return; }
+  if (tab) { ui.openRestart = false; ui.view = tab.dataset.view; render(); window.scrollTo(0, 0); return; }
   const el = e.target.closest('[data-act]'); if (!el) return;
   const act = el.dataset.act, d = ui.date, p = S.plan;
   const nm = document.getElementById('nd-name');
@@ -581,6 +663,16 @@ document.addEventListener('click', e => {
       p.targets = head.concat([cur, cur], p.targets.slice(i));
       S.pace.snooze = addDays(today(), 3); snapshot(); save(); toast('Holding steady for 3 days. You’re doing fine 🌿'); break;
     }
+    case 'weekok': S.pace.weekly = today(); save(); break;
+    case 'slipkeep': S.pace.slip = today(); save(); break;
+    case 'sliphold': {
+      snapshot();
+      const i = planIdx(today()), cur = target(today());
+      if (i != null) { const head = p.targets.slice(0, i + 1); while (head.length < i + 1) head.push(cur); p.targets = head.concat([cur], p.targets.slice(i + 1)); }
+      S.pace.slip = today(); snapshot(); save(); toast('Tomorrow holds the same level. Steady wins 🌿'); break;
+    }
+    case 'newtaper': ui.view = 'plan'; ui.openRestart = true; break;
+    case 'maintok': S.pace.maint = addDays(today(), 3); save(); break;
     case 'snooze': S.pace.snooze = addDays(today(), 2); save(); break;
     case 'nudgelater': S.settings.nudgeSnooze = addDays(today(), 3); save(); break;
     case 'deldrink': { const L2 = S.logs[d]; if (L2?.drinks) { const dr2 = { ...L2.drinks }; delete dr2[el.dataset.id]; setLog(d, { drinks: dr2 }); } break; }
@@ -796,9 +888,19 @@ applyTheme();
 applyDecor();
 pushBackup();
 if (!S.plan && !S.baseline) ui.view = 'plan';
+handleLaunchParams();
 render();
 checkReminder(); scheduleTrigger();
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
+function handleLaunchParams() {
+  const quick = new URLSearchParams(location.search).get('quick');
+  if (!quick) return;
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
+  const d = today();
+  if (quick === 'cans') { setLog(d, { caf: Math.min((S.logs[d]?.caf || 0) + 1, 99) }); stamp(d); toast('Logged a can'); }
+  else { const pr = S.settings.presets.find(x => x.id === quick); if (!pr) return; setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); toast(`Logged ${pr.name}`); }
+  ui.date = d; ui.followToday = true; if (S.plan || S.baseline) ui.view = 'today';
+}
 function rollover() { pushBackup(); if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
 setInterval(() => { checkReminder(); rollover(); }, 30000);
 document.addEventListener('visibilitychange', () => {

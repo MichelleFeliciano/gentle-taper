@@ -8,6 +8,11 @@
   "orientation": "portrait",
   "background_color": "#f4f9f1",
   "theme_color": "#cfe5d3",
+  "shortcuts": [
+    { "name": "Log a coffee", "short_name": "Coffee", "url": "./?quick=coffee", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Log a soda", "short_name": "Soda", "url": "./?quick=soda", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Log a can", "short_name": "Can", "url": "./?quick=cans", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
