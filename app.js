@@ -13,7 +13,7 @@ const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Shot', 'Glass'];
 const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function defaults() {
-  return { plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', presets: [
+  return { v: 2, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', presets: [
     { id: 'soda', name: 'Soda', type: 'Soda', container: 'Bottle', oz: 20, mg: 57, fav: true },
     { id: 'coffee', name: 'Coffee', type: 'Coffee', container: 'Cup', oz: 8, mg: 95, fav: true },
     { id: 'energy', name: 'Energy drink', type: 'Energy drink', container: 'Can', oz: 16, mg: 160, fav: false },
@@ -23,11 +23,21 @@ function defaults() {
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s) { const d = defaults(); return Object.assign(d, s, { settings: Object.assign(d.settings, s.settings) }); }
+    if (s) { const d = defaults(); return Object.assign(d, s, { v: s.v, settings: Object.assign(d.settings, s.settings) }); }
   } catch (e) { /* fall through */ }
   return defaults();
 }
 let S = load();
+// v2: targets are stored in mg of caffeine instead of cans.
+function migrate() {
+  if (S.v === 2) return;
+  const k = S.settings.canMg || 40, f = x => Math.round(x * k / 5) * 5;
+  if (S.plan) S.plan.targets = S.plan.targets.map(f);
+  (S.pastPlans || []).forEach(p => { p.targets = p.targets.map(f); });
+  Object.keys(S.hist || {}).forEach(d => { if (S.hist[d] != null) S.hist[d] = f(S.hist[d]); });
+  S.v = 2; save();
+}
+migrate();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save on this device'); }
 }
@@ -46,7 +56,18 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /* ---------- plan logic ---------- */
 function gen(from, n) {
-  return Array.from({ length: n }, (_, i) => (n === 1 ? 0 : Math.round(from * (1 - i / (n - 1)))));
+  return Array.from({ length: n }, (_, i) => (n === 1 ? 0 : Math.round(from * (1 - i / (n - 1)) / 5) * 5));
+}
+function baselineDays() { const b = S.baseline; return b ? Object.keys(S.logs).filter(d => d >= b.start && d <= today()).sort() : []; }
+function checkBaseline() {
+  const b = S.baseline; if (!b || S.plan) return;
+  const days = baselineDays().slice(0, 3); if (days.length < 3) return;
+  const mgStart = Math.round(avg(days.map(totalMg)) / 5) * 5;
+  S.baseline = null;
+  if (mgStart < 10) { save(); toast('You’re already near zero — nothing to taper! 🌿'); return; }
+  const start = days[2] < today() ? today() : addDays(today(), 1);
+  S.plan = { start, targets: gen(mgStart, b.taperDays), pausedAt: null, fromBaseline: true };
+  save(); toast(`Baseline done: about ${mgStart} mg a day. Your taper ${start === today() ? 'starts today' : 'starts tomorrow'}.`);
 }
 function planIdx(date) {
   const p = S.plan; if (!p || date < p.start) return null;
@@ -124,12 +145,15 @@ function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(
 
 /* ---------- views ---------- */
 function render() {
+  checkBaseline();
   snapshot();
   const y = window.scrollY;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === ui.view));
   const sub = document.getElementById('subtitle');
   const p = S.plan;
-  sub.textContent = !p ? 'A soft landing, one day at a time'
+  sub.textContent = !p && S.baseline ? `Getting to know your habit · ${Math.min(baselineDays().length, 3)} of 3 days logged`
+    : !p ? 'A soft landing, one day at a time'
+    : p.start > today() ? 'Your taper begins tomorrow'
     : p.pausedAt ? 'Taper paused — rest is part of the plan'
     : `Day ${Math.min(planIdx(today()) + 1, p.targets.length) || 1} of ${p.targets.length}`;
   const v = { today: vToday, plan: vPlan, progress: vProgress, settings: vSettings }[ui.view];
@@ -147,18 +171,19 @@ function stepper(act, val, cls, extra = '') {
 function vToday() {
   const d = ui.date, t = target(d), L = S.logs[d], Y = S.sym[d] || {};
   const caf = L ? L.caf : 0, dec = L ? L.decaf : 0, isToday = d === today();
-  const tot = total(d) ?? 0, mg = totalMg(d), dr = L?.drinks || {};
+  const mg = totalMg(d), tot = mg, dr = L?.drinks || {};
   let hero;
   if (t == null) {
     hero = `<div class="card hero"><div class="lbl">No target set for this day</div>
-      <div class="status">${S.plan ? 'This is before your taper began.' : 'Set up a taper in the Plan tab to see daily targets.'}</div></div>`;
+      <div class="status">${S.plan ? (isToday && S.plan.start > today() ? `Baseline complete! Your taper starts tomorrow at ${S.plan.targets[0]} mg.` : 'This is before your taper began.')
+        : S.baseline ? 'Learning your habit: log everything you normally have — no target yet.' : 'Set up a taper in the Plan tab to see daily targets.'}</div></div>`;
   } else {
     const logged = !!L;
     let msg = '';
     if (logged) msg = tot <= t ? (tot < t ? 'Under target — lovely.' : 'Right on target.') : 'A little over — that’s okay. Tomorrow is a fresh leaf.';
     else if (t === 0) msg = 'Today is a caffeine-free day.';
     hero = `<div class="card hero"><div class="lbl">${isToday ? 'Today’s' : 'That day’s'} target</div>
-      <div class="big">${t}</div><div class="lbl">caffeinated ${t === 1 ? 'can' : 'cans'}</div>
+      <div class="big">${t}</div><div class="lbl">mg of caffeine</div>
       ${msg ? `<div class="status ${logged && tot > t ? 'over' : ''}">${msg}</div>` : ''}</div>`;
   }
   return `
@@ -207,13 +232,22 @@ function drinksCard(d, t) {
       ${favs.length ? favs.map(p => drinkRow(p, dr)).join('') : '<p class="muted">No favorites yet — star a drink below or add a new one.</p>'}
       ${others.length ? `<details class="more" ${open ? 'open' : ''}><summary>More drinks (${others.length})</summary>${others.map(p => drinkRow(p, dr)).join('')}</details>` : ''}
       ${ui.newOpen ? form : '<div class="btns"><button class="btn ghost" data-act="newdrink">+ New drink</button></div>'}
-      <div class="totals"><b>${totalMg(d)} mg</b> caffeine today<br><span class="muted">≈ ${n1(total(d) ?? 0)} can-equivalents${t != null ? ` · target ${t}` : ''}</span></div>
+      <div class="totals"><b>${totalMg(d)} mg</b> caffeine today<br><span class="muted">${t != null ? `target ${t} mg` : 'no target yet'}${t != null && mg <= t ? ` · ${t - mg} mg to spare` : t != null ? ` · ${mg - t} mg over` : ''}</span></div>
     </div>`;
 }
 
 function vPlan() {
   const p = S.plan;
-  if (!p) return `<div class="card"><h2>Start a taper</h2><p class="muted">Pick where you are now and how long you’d like to take. You can change any of it later.</p>${setupForm()}</div>`;
+  if (!p && S.baseline) {
+    const bd = baselineDays();
+    return `<div class="card"><h2>Learning your habit</h2>
+      <p class="muted">Log everything you normally drink for 3 days — no targets, no pressure. Then your taper is built from your average.</p>
+      <div class="stats"><div class="stat"><b>${Math.min(bd.length, 3)} / 3</b><span>days logged</span></div>
+        <div class="stat"><b>${bd.length ? Math.round(avg(bd.slice(0, 3).map(totalMg))) : '—'}</b><span>avg mg / day so far</span></div></div>
+      <p class="muted" style="margin-top:10px">Taper length once it starts: ${S.baseline.taperDays} days.</p>
+      <div class="btns"><button class="btn ghost" data-act="cancelbaseline">I know my amount — enter it instead</button></div></div>`;
+  }
+  if (!p) return `<div class="card"><h2>Start a taper</h2><p class="muted">Enter how much caffeine you have in a day now, or let the app learn it over 3 days. You can change any of it later.</p>${setupForm()}</div>`;
   const ti = planIdx(today()), t = today();
   const rows = p.targets.map((v, i) => {
     const date = addDays(p.start, i), past = i < ti, now = i === ti;
@@ -223,19 +257,19 @@ function vPlan() {
         : `<div class="stepper"><button class="round" data-act="ed-" data-i="${i}">−</button><span class="n">${v}</span><button class="round plus" data-act="ed+" data-i="${i}">+</button></div>`}
     </div>`;
   }).join('');
-  const cur = target(t) ?? 0;
+  const cur = target(t) ?? p.targets[0];
   return `
     <div class="card">
       <div class="row"><h2 style="margin:0">Your taper</h2>${p.pausedAt ? '<span class="pill">Paused</span>' : '<span class="pill sage">Active</span>'}</div>
-      <p class="muted">${p.targets[0]} cans → 0 over ${p.targets.length} days · started ${short(p.start)}${p.pausedAt ? ` · paused since ${short(p.pausedAt)}` : ''}</p>
+      <p class="muted">${p.targets[0]} mg → 0 over ${p.targets.length} days · started ${short(p.start)}${p.fromBaseline ? ' · based on your 3-day baseline' : ''}${p.pausedAt ? ` · paused since ${short(p.pausedAt)}` : ''}</p>
       <div class="btns">
         <button class="btn ${p.pausedAt ? 'rose' : 'ghost'}" data-act="${p.pausedAt ? 'resume' : 'pause'}">${p.pausedAt ? 'Resume taper' : 'Pause taper'}</button>
       </div>
     </div>
     <details class="card"><summary>Adjust from today</summary>
       <p class="muted">Re-spreads the remaining steps. Past days and your logs are untouched.</p>
-      <label class="f" for="adjFrom">Cans per day, starting today</label>
-      <input id="adjFrom" type="number" inputmode="numeric" min="0" max="30" value="${cur}">
+      <label class="f" for="adjFrom">Caffeine per day (mg), starting today</label>
+      <input id="adjFrom" type="number" inputmode="numeric" min="0" max="2000" step="5" value="${cur}">
       <label class="f" for="adjDays">Days from today until zero</label>
       <input id="adjDays" type="number" inputmode="numeric" min="1" max="365" value="${Math.max(p.targets.length - 1 - (ti ?? 0), 1)}">
       <div class="btns"><button class="btn" data-act="adjust">Apply</button></div>
@@ -245,14 +279,16 @@ function vPlan() {
       ${setupForm()}
     </details>
     <div class="card"><h2>Day-by-day targets</h2>
-      <p class="muted">Tap − / + to change any upcoming day.</p>${rows}</div>`;
+      <p class="muted">Tap − / + to change any upcoming day (10 mg at a time).</p>${rows}</div>`;
 }
 function setupForm() {
-  return `<label class="f" for="stCans">Caffeinated cans per day now</label>
-    <input id="stCans" type="number" inputmode="numeric" min="1" max="30" value="${S.plan ? S.plan.targets[0] : 4}">
+  return `<label class="f" for="stCans">Caffeine per day now (mg)</label>
+    <input id="stCans" type="number" inputmode="numeric" min="5" max="2000" step="5" value="${S.plan ? S.plan.targets[0] : 200}">
+    <p class="muted" style="margin:4px 0 0">For reference: a cup of coffee is ~95 mg, a can of soda ~40 mg.</p>
     <label class="f" for="stDays">Total days (the last day is zero)</label>
     <input id="stDays" type="number" inputmode="numeric" min="2" max="365" value="${S.plan ? S.plan.targets.length : 28}">
-    <div class="btns"><button class="btn rose" data-act="start">${S.plan ? 'Restart taper' : 'Begin my taper'}</button></div>`;
+    <div class="btns"><button class="btn rose" data-act="start">${S.plan ? 'Restart taper' : 'Begin my taper'}</button>
+      <button class="btn ghost" data-act="startunknown">I’m not sure — track 3 days first</button></div>`;
 }
 
 /* ---- charts ---- */
@@ -260,7 +296,7 @@ function chart({ dates, series, ymax }) {
   const W = 340, H = 190, Lm = 26, R = 10, T = 10, B = 24, pw = W - Lm - R, ph = H - T - B, n = dates.length;
   const x = i => Lm + (n < 2 ? pw / 2 : pw * i / (n - 1));
   const y = v => T + ph * (1 - v / ymax);
-  const step = ymax <= 4 ? 1 : Math.ceil(ymax / 4);
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find(q => ymax / q <= 5);
   let g = '';
   for (let v = 0; v <= ymax; v += step) g += `<line x1="${Lm}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${cv('--line')}" stroke-width="1"/><text x="${Lm - 6}" y="${y(v) + 3}" text-anchor="end">${v}</text>`;
   const lab = Math.min(n, 5);
@@ -298,25 +334,24 @@ function vProgress() {
   if (!S.plan && !Object.keys(S.logs).length) return `<div class="card"><h2>Progress</h2><p class="muted">Charts will bloom here once you’ve set up a taper and logged a few days.</p></div>`;
   const dates = rangeDates();
   const ranges = [[7, '7 days'], [14, '14 days'], [30, '30 days'], [0, 'All']];
-  const ymaxC = Math.max(2, ...dates.map(d => Math.max(target(d) ?? 0, total(d) ?? 0, ui.showDecaf ? S.logs[d]?.decaf ?? 0 : 0)));
-  const ymaxI = Math.ceil(ymaxC);
+  const ymaxC = Math.max(100, ...dates.map(d => Math.max(target(d) ?? 0, totalMg(d))));
+  const ymaxI = Math.ceil(ymaxC / 50) * 50;
   const cs = [
     { color: cv('--c-target'), dash: true, w: 2.5, vals: dates.map(d => target(d)) },
-    { color: cv('--c-caf'), dots: true, vals: dates.map(d => total(d)) },
+    { color: cv('--c-caf'), dots: true, vals: dates.map(d => S.logs[d] ? totalMg(d) : null) },
   ];
-  if (ui.showDecaf) cs.push({ color: cv('--c-decaf'), dots: true, w: 1.8, vals: dates.map(d => S.logs[d]?.decaf ?? null) });
 
   // stats
   const logged = Object.keys(S.logs).filter(d => target(d) != null);
   const base = S.plan ? S.plan.targets[0] : 0;
-  const skipped = Math.round(logged.reduce((a, d) => a + Math.max(base - total(d), 0), 0));
-  const onTrack = logged.filter(d => total(d) <= target(d)).length;
+  const skipped = Math.round(logged.reduce((a, d) => a + Math.max(base - totalMg(d), 0), 0));
+  const onTrack = logged.filter(d => totalMg(d) <= target(d)).length;
   const recent = Object.keys(S.logs).sort().slice(-7);
   const avgMg = recent.length ? Math.round(avg(recent.map(totalMg))) : 0;
   let streak = 0;
   for (let d = today(); ; d = addDays(d, -1)) {
     if (d === today() && !S.logs[d]) continue;
-    if (S.logs[d] && target(d) != null && total(d) <= target(d)) streak++; else break;
+    if (S.logs[d] && target(d) != null && totalMg(d) <= target(d)) streak++; else break;
     if (streak > 800) break;
   }
 
@@ -339,16 +374,15 @@ function vProgress() {
 
   return `
     <div class="chips">${ranges.map(([v, l]) => `<button class="chip ${ui.range === v ? 'on' : ''}" data-act="range" data-v="${v}">${l}</button>`).join('')}</div>
-    <div class="card"><h2>Cans vs. target</h2>
+    <div class="card"><h2>Caffeine vs. target (mg)</h2>
       ${chart({ dates, series: cs, ymax: ymaxI })}
-      <div class="legend"><span><i class="dash" style="border-color:${cv('--c-target')}"></i>Target</span><span><i style="border-color:${cv('--c-caf')}"></i>Caffeinated (cans + drinks)</span>${ui.showDecaf ? `<span><i style="border-color:${cv('--c-decaf')}"></i>Caffeine-free</span>` : ''}</div>
-      <div class="chips" style="margin-top:10px"><button class="chip ${ui.showDecaf ? 'on' : ''}" data-act="decaf">Show caffeine-free</button></div>
+      <div class="legend"><span><i class="dash" style="border-color:${cv('--c-target')}"></i>Target</span><span><i style="border-color:${cv('--c-caf')}"></i>Caffeine you had</span></div>
     </div>
     <div class="card"><h2>Highlights</h2><div class="stats">
       <div class="stat"><b>${logged.length}</b><span>days logged</span></div>
       <div class="stat"><b>${onTrack}</b><span>days at or under target</span></div>
       <div class="stat"><b>${streak}</b><span>day streak on target</span></div>
-      <div class="stat"><b>${skipped}</b><span>cans skipped vs. start</span></div>
+      <div class="stat"><b>${skipped}</b><span>mg cut vs. your start, in total</span></div>
       <div class="stat"><b>${avgMg}</b><span>avg mg caffeine / day (last 7 logged)</span></div></div></div>
     <div class="card"><h2>Symptoms over time</h2>
       <p class="muted" style="margin-top:-4px">0 = none, 3 = strong. Lower is better.</p>
@@ -378,7 +412,7 @@ function vSettings() {
       </div>
     </div>
     <div class="card"><h2>Caffeine amounts</h2>
-      <p class="muted" style="margin-top:-4px">Used to turn drinks into can-equivalents. Adjust to match what you actually drink.</p>
+      <p class="muted" style="margin-top:-4px">Used for the quick “Caffeinated cans” counter. Adjust to match what you actually drink.</p>
       <label class="f" for="canMg">Caffeine in one can (mg)</label>
       <input id="canMg" type="number" inputmode="numeric" min="1" max="500" value="${st.canMg}">
       <h3>My drinks</h3>
@@ -435,13 +469,21 @@ document.addEventListener('click', e => {
       break;
     }
     case 'start': {
-      const cans = clamp(parseInt(document.getElementById('stCans').value, 10) || 0, 1, 30);
+      const mgNow = clamp(parseInt(document.getElementById('stCans').value, 10) || 0, 5, 2000);
       const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 0, 2, 365);
       if (S.plan) { snapshot(); S.pastPlans.push(S.plan); }
-      S.plan = { start: today(), targets: gen(cans, days), pausedAt: null };
+      S.baseline = null;
+      S.plan = { start: today(), targets: gen(mgNow, days), pausedAt: null };
       snapshot(); save(); ui.view = 'today'; ui.date = today(); toast('Your taper has begun 🌸');
       break;
     }
+    case 'startunknown': {
+      const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 0, 2, 365);
+      if (S.plan) { snapshot(); S.pastPlans.push(S.plan); S.plan = null; }
+      S.baseline = { start: today(), taperDays: days }; save(); ui.view = 'today'; ui.date = today();
+      toast('Great — log what you normally drink for 3 days 🌿'); break;
+    }
+    case 'cancelbaseline': S.baseline = null; save(); break;
     case 'pause': snapshot(); p.pausedAt = today(); save(); toast('Taper paused'); break;
     case 'resume': {
       snapshot();
@@ -450,15 +492,15 @@ document.addEventListener('click', e => {
     }
     case 'adjust': {
       snapshot();
-      const from = clamp(parseInt(document.getElementById('adjFrom').value, 10) || 0, 0, 30);
+      const from = clamp(parseInt(document.getElementById('adjFrom').value, 10) || 0, 0, 2000);
       const n = clamp(parseInt(document.getElementById('adjDays').value, 10) || 1, 1, 365);
-      const i = planIdx(today());
+      const i = planIdx(today()) ?? 0;
       p.targets = p.targets.slice(0, i).concat(gen(from, n + 1));
       snapshot(); save(); toast('Schedule adjusted'); break;
     }
     case 'ed+': case 'ed-': {
       const i = +el.dataset.i;
-      p.targets[i] = clamp(p.targets[i] + (act === 'ed+' ? 1 : -1), 0, 30);
+      p.targets[i] = clamp(p.targets[i] + (act === 'ed+' ? 10 : -10), 0, 2000);
       save(); break;
     }
     case 'addpreset': S.settings.presets.push({ id: 'p' + Date.now().toString(36), name: 'New drink', type: 'Other', container: 'Can', oz: null, mg: 50, fav: false }); save(); break;
@@ -516,7 +558,7 @@ document.addEventListener('change', async e => {
     try {
       const data = JSON.parse(await t.files[0].text());
       if (!data || typeof data !== 'object' || !('logs' in data)) throw new Error('bad');
-      S = Object.assign(defaults(), data); save(); render(); toast('Backup restored');
+      S = Object.assign(defaults(), data, { v: data.v }); migrate(); save(); render(); toast('Backup restored');
     } catch (err) { toast('That file doesn’t look like a backup'); }
   }
 });
