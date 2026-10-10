@@ -192,3 +192,10 @@ details.card[open] summary { margin-bottom: 8px; }
 
 @media (min-width: 560px) { .vine { width: 60px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+.totals { margin-top: 10px; padding: 10px 12px; background: #f1ecf8; border-radius: 16px; text-align: center; }
+.totals b { font-family: var(--font-head); font-size: 22px; color: var(--lav-deep); font-weight: 500; }
+.preset { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.preset .pname { flex: 1; min-width: 0; }
+.preset .pmg { width: 74px; flex: none; }
+.preset .round { width: 40px; height: 40px; flex: none; color: var(--rose-deep); }

@@ -10,7 +10,12 @@ const SEV = ['None', 'Mild', 'Moderate', 'Strong'];
 const SYM_COLORS = ['#e39aab', '#6c8d68', '#8f7bb8', '#d9a84f', '#5f9ea0', '#c9677f'];
 
 function defaults() {
-  return { plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '' } };
+  return { plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, presets: [
+    { id: 'soda', name: 'Soda bottle (20 oz)', mg: 57 },
+    { id: 'coffee', name: 'Coffee (8 oz cup)', mg: 95 },
+    { id: 'energy', name: 'Energy drink', mg: 80 },
+    { id: 'tea', name: 'Tea (8 oz cup)', mg: 47 },
+  ] } };
 }
 function load() {
   try {
@@ -99,6 +104,18 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
 }
+const n1 = v => String(Math.round(v * 10) / 10);
+function drinkMg(d) { const dr = S.logs[d]?.drinks || {}; return Object.values(dr).reduce((a, x) => a + x.n * x.mg, 0); }
+function totalMg(d) { const L = S.logs[d]; return L ? Math.round(L.caf * S.settings.canMg + drinkMg(d)) : 0; }
+// Everything caffeinated, expressed in "cans" so it can be compared with the daily target.
+function total(d) { const L = S.logs[d]; return L ? Math.round((L.caf + drinkMg(d) / S.settings.canMg) * 10) / 10 : null; }
+function setDrink(d, p, delta) {
+  const L = Object.assign({ caf: 0, decaf: 0 }, S.logs[d]); const dr = Object.assign({}, L.drinks);
+  const cur = dr[p.id] || { n: 0, mg: p.mg, name: p.name };
+  const n = clamp(cur.n + delta, 0, 99);
+  if (n) dr[p.id] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name }; else delete dr[p.id];
+  setLog(d, { drinks: dr });
+}
 function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); }
 function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(); }
 
@@ -117,16 +134,17 @@ function render() {
   window.scrollTo(0, y);
 }
 
-function stepper(act, val, cls) {
+function stepper(act, val, cls, extra = '') {
   return `<div class="stepper">
-    <button class="round" data-act="${act}-" aria-label="less">−</button>
+    <button class="round" data-act="${act}-" ${extra} aria-label="less">−</button>
     <span class="n">${val}</span>
-    <button class="round plus ${cls || ''}" data-act="${act}+" aria-label="more">+</button></div>`;
+    <button class="round plus ${cls || ''}" data-act="${act}+" ${extra} aria-label="more">+</button></div>`;
 }
 
 function vToday() {
   const d = ui.date, t = target(d), L = S.logs[d], Y = S.sym[d] || {};
   const caf = L ? L.caf : 0, dec = L ? L.decaf : 0, isToday = d === today();
+  const tot = total(d) ?? 0, mg = totalMg(d), dr = L?.drinks || {};
   let hero;
   if (t == null) {
     hero = `<div class="card hero"><div class="lbl">No target set for this day</div>
@@ -134,11 +152,11 @@ function vToday() {
   } else {
     const logged = !!L;
     let msg = '';
-    if (logged) msg = caf <= t ? (caf < t ? 'Under target — lovely.' : 'Right on target.') : 'A little over — that’s okay. Tomorrow is a fresh leaf.';
+    if (logged) msg = tot <= t ? (tot < t ? 'Under target — lovely.' : 'Right on target.') : 'A little over — that’s okay. Tomorrow is a fresh leaf.';
     else if (t === 0) msg = 'Today is a caffeine-free day.';
     hero = `<div class="card hero"><div class="lbl">${isToday ? 'Today’s' : 'That day’s'} target</div>
       <div class="big">${t}</div><div class="lbl">caffeinated ${t === 1 ? 'can' : 'cans'}</div>
-      ${msg ? `<div class="status ${logged && caf > t ? 'over' : ''}">${msg}</div>` : ''}</div>`;
+      ${msg ? `<div class="status ${logged && tot > t ? 'over' : ''}">${msg}</div>` : ''}</div>`;
   }
   return `
     <div class="datenav">
@@ -150,6 +168,11 @@ function vToday() {
     <div class="card"><h2>Cans I had</h2>
       <div class="counter"><div class="name">Caffeinated<small>counts toward the taper</small></div>${stepper('caf', caf)}</div>
       <div class="counter"><div class="name">Caffeine-free<small>just for the record</small></div>${stepper('dec', dec, 'sage')}</div>
+    </div>
+    <div class="card"><h2>Other drinks</h2>
+      <p class="muted" style="margin-top:-4px">Bottles, coffee and more — they count toward your target by caffeine amount.</p>
+      ${S.settings.presets.map(p => `<div class="counter"><div class="name">${esc(p.name)}<small>${p.mg} mg each</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`)}</div>`).join('')}
+      <div class="totals"><b>${mg} mg</b> caffeine today<br><span class="muted">≈ ${n1(tot)} can-equivalents${t != null ? ` · target ${t}` : ''}</span></div>
     </div>
     <div class="card"><h2>How am I feeling?</h2>
       ${SYMS.map(([k, name]) => `<div class="sym"><div class="nm">${name}</div>
@@ -247,22 +270,25 @@ function vProgress() {
   if (!S.plan && !Object.keys(S.logs).length) return `<div class="card"><h2>Progress</h2><p class="muted">Charts will bloom here once you’ve set up a taper and logged a few days.</p></div>`;
   const dates = rangeDates();
   const ranges = [[7, '7 days'], [14, '14 days'], [30, '30 days'], [0, 'All']];
-  const ymaxC = Math.max(2, ...dates.map(d => Math.max(target(d) ?? 0, S.logs[d]?.caf ?? 0, ui.showDecaf ? S.logs[d]?.decaf ?? 0 : 0)));
+  const ymaxC = Math.max(2, ...dates.map(d => Math.max(target(d) ?? 0, total(d) ?? 0, ui.showDecaf ? S.logs[d]?.decaf ?? 0 : 0)));
+  const ymaxI = Math.ceil(ymaxC);
   const cs = [
     { color: '#c9a3d8', dash: true, w: 2.5, vals: dates.map(d => target(d)) },
-    { color: '#6c8d68', dots: true, vals: dates.map(d => S.logs[d]?.caf ?? null) },
+    { color: '#6c8d68', dots: true, vals: dates.map(d => total(d)) },
   ];
   if (ui.showDecaf) cs.push({ color: '#d9a84f', dots: true, w: 1.8, vals: dates.map(d => S.logs[d]?.decaf ?? null) });
 
   // stats
   const logged = Object.keys(S.logs).filter(d => target(d) != null);
   const base = S.plan ? S.plan.targets[0] : 0;
-  const skipped = logged.reduce((a, d) => a + Math.max(base - S.logs[d].caf, 0), 0);
-  const onTrack = logged.filter(d => S.logs[d].caf <= target(d)).length;
+  const skipped = Math.round(logged.reduce((a, d) => a + Math.max(base - total(d), 0), 0));
+  const onTrack = logged.filter(d => total(d) <= target(d)).length;
+  const recent = Object.keys(S.logs).sort().slice(-7);
+  const avgMg = recent.length ? Math.round(avg(recent.map(totalMg))) : 0;
   let streak = 0;
   for (let d = today(); ; d = addDays(d, -1)) {
     if (d === today() && !S.logs[d]) continue;
-    if (S.logs[d] && target(d) != null && S.logs[d].caf <= target(d)) streak++; else break;
+    if (S.logs[d] && target(d) != null && total(d) <= target(d)) streak++; else break;
     if (streak > 800) break;
   }
 
@@ -286,15 +312,16 @@ function vProgress() {
   return `
     <div class="chips">${ranges.map(([v, l]) => `<button class="chip ${ui.range === v ? 'on' : ''}" data-act="range" data-v="${v}">${l}</button>`).join('')}</div>
     <div class="card"><h2>Cans vs. target</h2>
-      ${chart({ dates, series: cs, ymax: ymaxC })}
-      <div class="legend"><span><i class="dash" style="border-color:#c9a3d8"></i>Target</span><span><i style="border-color:#6c8d68"></i>Caffeinated</span>${ui.showDecaf ? '<span><i style="border-color:#d9a84f"></i>Caffeine-free</span>' : ''}</div>
+      ${chart({ dates, series: cs, ymax: ymaxI })}
+      <div class="legend"><span><i class="dash" style="border-color:#c9a3d8"></i>Target</span><span><i style="border-color:#6c8d68"></i>Caffeinated (cans + drinks)</span>${ui.showDecaf ? '<span><i style="border-color:#d9a84f"></i>Caffeine-free</span>' : ''}</div>
       <div class="chips" style="margin-top:10px"><button class="chip ${ui.showDecaf ? 'on' : ''}" data-act="decaf">Show caffeine-free</button></div>
     </div>
     <div class="card"><h2>Highlights</h2><div class="stats">
       <div class="stat"><b>${logged.length}</b><span>days logged</span></div>
       <div class="stat"><b>${onTrack}</b><span>days at or under target</span></div>
       <div class="stat"><b>${streak}</b><span>day streak on target</span></div>
-      <div class="stat"><b>${skipped}</b><span>cans skipped vs. start</span></div></div></div>
+      <div class="stat"><b>${skipped}</b><span>cans skipped vs. start</span></div>
+      <div class="stat"><b>${avgMg}</b><span>avg mg caffeine / day (last 7 logged)</span></div></div></div>
     <div class="card"><h2>Symptoms over time</h2>
       <p class="muted" style="margin-top:-4px">0 = none, 3 = strong. Lower is better.</p>
       <div class="chips"><button class="chip ${ui.symSel.has('avg') ? 'on' : ''}" data-act="symsel" data-k="avg">Overall</button>
@@ -319,6 +346,16 @@ function vSettings() {
         <button class="btn ghost" data-act="ics">Add to calendar (.ics)</button>
       </div>
     </div>
+    <div class="card"><h2>Caffeine amounts</h2>
+      <p class="muted" style="margin-top:-4px">Used to turn drinks into can-equivalents. Adjust to match what you actually drink.</p>
+      <label class="f" for="canMg">Caffeine in one can (mg)</label>
+      <input id="canMg" type="number" inputmode="numeric" min="1" max="500" value="${st.canMg}">
+      <h3>Other drinks</h3>
+      ${st.presets.map(p => `<div class="preset"><input class="pname" data-pid="${esc(p.id)}" data-f="name" value="${esc(p.name)}" aria-label="Drink name">
+        <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-pid="${esc(p.id)}" data-f="mg" value="${p.mg}" aria-label="mg"><span class="muted">mg</span>
+        <button class="round" data-act="delpreset" data-id="${esc(p.id)}" aria-label="Remove">×</button></div>`).join('')}
+      <div class="btns"><button class="btn ghost" data-act="addpreset">+ Add a drink</button></div>
+    </div>
     <div class="card"><h2>Your data</h2>
       <p class="muted">Everything lives only on this device.</p>
       <div class="btns">
@@ -342,6 +379,7 @@ document.addEventListener('click', e => {
     case 'next': if (d < today()) ui.date = addDays(d, 1); break;
     case 'caf+': setLog(d, { caf: Math.min(L().caf + 1, 99) }); break;
     case 'caf-': setLog(d, { caf: Math.max(L().caf - 1, 0) }); break;
+    case 'dr+': case 'dr-': { const pr = S.settings.presets.find(x => x.id === el.dataset.id); if (pr) setDrink(d, pr, act === 'dr+' ? 1 : -1); break; }
     case 'dec+': setLog(d, { decaf: Math.min(L().decaf + 1, 99) }); break;
     case 'dec-': setLog(d, { decaf: Math.max(L().decaf - 1, 0) }); break;
     case 'sev': setSym(d, { [el.dataset.k]: +el.dataset.v, done: true }); break;
@@ -386,6 +424,8 @@ document.addEventListener('click', e => {
       p.targets[i] = clamp(p.targets[i] + (act === 'ed+' ? 1 : -1), 0, 30);
       save(); break;
     }
+    case 'addpreset': S.settings.presets.push({ id: 'p' + Date.now().toString(36), name: 'New drink', mg: 50 }); save(); break;
+    case 'delpreset': S.settings.presets = S.settings.presets.filter(x => x.id !== el.dataset.id); save(); break;
     case 'testnotif': testNotif(); return;
     case 'ics': downloadICS(); return;
     case 'export': exportData(); return;
@@ -409,6 +449,11 @@ document.addEventListener('change', async e => {
     S.settings.remind = t.checked && 'Notification' in window && Notification.permission === 'granted';
     if (t.checked && !S.settings.remind) toast('Please allow notifications to turn this on');
     S.settings.lastNotified = ''; save(); scheduleTrigger(); render();
+  } else if (t.id === 'canMg') {
+    S.settings.canMg = clamp(parseInt(t.value, 10) || 40, 1, 500); save(); toast('Saved');
+  } else if (t.dataset.pid) {
+    const p = S.settings.presets.find(x => x.id === t.dataset.pid);
+    if (p) { if (t.dataset.f === 'mg') p.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); else p.name = t.value.trim() || 'Drink'; save(); toast('Saved'); }
   } else if (t.id === 'remTime') {
     S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
