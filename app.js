@@ -78,7 +78,7 @@ const ui = { newOpen: false, moreOpen: false, view: 'today', date: today(), rang
 /* ---------- decoration ---------- */
 function vineSVG(horizontal) {
   const leaf = (x, y, r, s, c) => `<path transform="translate(${x} ${y}) rotate(${r}) scale(${s})" d="M0 0C6-9 18-9 26 0C18 9 6 9 0 0Z" fill="${c}"/>`;
-  const bloom = (x, y) => `<g transform="translate(${x} ${y})">${[0, 72, 144, 216, 288].map(a => `<ellipse cx="0" cy="-5" rx="3.4" ry="5" transform="rotate(${a})" fill="#f2b8c6"/>`).join('')}<circle r="2.3" fill="#fbe7a8"/></g>`;
+  const bloom = (x, y) => `<g transform="translate(${x} ${y})">${[0, 72, 144, 216, 288].map(a => `<ellipse cx="0" cy="-5" rx="3.4" ry="5" transform="rotate(${a})" fill="#d8cdea"/>`).join('')}<circle r="2.3" fill="#fbe7a8"/></g>`;
   const greens = ['#a9c3a3', '#8fb08a', '#bfd3b8', '#9dbb97'];
   let stem = [], parts = [];
   for (let y = 0; y <= 400; y += 8) stem.push(`${y ? 'L' : 'M'}${(30 + 13 * Math.sin(y / 200 * 2 * Math.PI)).toFixed(1)} ${y}`);
@@ -584,7 +584,7 @@ function applyTheme() {
   const pref = S.settings.theme || 'auto';
   const dark = pref === 'dark' || (pref === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = dark ? '#2a1b22' : '#f3c9d3';
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = dark ? '#1c2a21' : '#cfe5d3';
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyTheme(); render(); });
 document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) ui.moreOpen = e.target.open; }, true);

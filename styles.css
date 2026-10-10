@@ -1,39 +1,45 @@
 :root {
-  --blush: #f7dfe4;
-  --rose: #e39aab;
-  --rose-deep: #c9677f;
+  --blush: #dff0e6;
+  --rose: #58a07e;
+  --rose-deep: #2f7d5e;
   --sage: #b4c9ae;
   --sage-deep: #6c8d68;
   --lav: #d8cdea;
   --lav-deep: #8f7bb8;
-  --cream: #fffaf7;
-  --paper: #fff6f3;
-  --ink: #4a3d44;
-  --ink-soft: #85747c;
-  --line: #efd9de;
+  --cream: #fbfdf9;
+  --paper: #f4f9f1;
+  --ink: #3d4a42;
+  --ink-soft: #6f8077;
+  --line: #d9e7d4;
   --radius: 22px;
-  --card: rgba(255, 250, 247, .92);
-  --bg1: #fde9ee; --bg2: #ebe5f5;
-  --hero1: #fdeaee; --hero2: #f1ecf8;
-  --sage-bg: #e5eee2; --blush-bg: #fdeaee; --lav-bg: #f1ecf8; --lav-bg2: #ecdff5; --lav-ink: #5f4a8a;
+  --card: rgba(251, 253, 249, .92);
+  --bg1: #e2f0df; --bg2: #ebe5f5;
+  --hero1: #e0f0e5; --hero2: #f1ecf8;
+  --sage-bg: #e5eee2; --blush-bg: #e0f0e5; --lav-bg: #f1ecf8; --lav-bg2: #ecdff5; --lav-ink: #5f4a8a;
   --warn-bg: #fbf0d6; --warn-bd: #e8cf8f; --warn-ink: #8a6d1f;
-  --pill-sage: #dfeadb; --tabbar: rgba(255, 246, 243, .94); --on-sage: #2f4a2c; --toast-bg: #6c8d68; --vine-op: .7;
+  --pill-sage: #dfeadb; --tabbar: rgba(244, 249, 241, .94); --on-sage: #2f4a2c; --toast-bg: #6c8d68; --vine-op: .7;
   --c-target: #c9a3d8; --c-caf: #6c8d68; --c-decaf: #d9a84f; --c-avg: #8f7bb8;
-  --s0: #e39aab; --s1: #6c8d68; --s2: #8f7bb8; --s3: #d9a84f; --s4: #5f9ea0; --s5: #c9677f;
+  --s0: #4fa58f; --s1: #6c8d68; --s2: #8f7bb8; --s3: #d9a84f; --s4: #5f9ea0; --s5: #c98a5e;
   --font-body: "Quicksand", ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, sans-serif;
   --font-head: "Fraunces", Georgia, serif;
+  --mod-bg: #fbe6dc;
+  --mod-bd: #e8a98f;
+  --mod-ink: #a5573a;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --blush: #3a2630; --rose: #d98ba0; --rose-deep: #f0a9ba; --sage: #7fa57a; --sage-deep: #a9cfa3;
-  --lav: #3f3454; --lav-deep: #bfaee6; --cream: #2b2227; --paper: #1c1619; --ink: #f2e8ec; --ink-soft: #b8a6ae; --line: #473840;
-  --card: rgba(40, 31, 36, .92); --bg1: #2a1b22; --bg2: #221d30; --hero1: #3a2630; --hero2: #2e2840;
-  --sage-bg: #2b3d2c; --blush-bg: #3a2630; --lav-bg: #2e2840; --lav-bg2: #3a2f52; --lav-ink: #d5c8f3;
+  --blush: #26382d; --rose: #5fae8c; --rose-deep: #9fdcbc; --sage: #7fa57a; --sage-deep: #a9cfa3;
+  --lav: #3f3454; --lav-deep: #bfaee6; --cream: #212a24; --paper: #151b17; --ink: #e9f1ea; --ink-soft: #a7b8ab; --line: #36453b;
+  --card: rgba(30, 39, 33, .92); --bg1: #1c2a21; --bg2: #221d30; --hero1: #26382d; --hero2: #2e2840;
+  --sage-bg: #2b3d2c; --blush-bg: #26382d; --lav-bg: #2e2840; --lav-bg2: #3a2f52; --lav-ink: #d5c8f3;
   --warn-bg: #3d3420; --warn-bd: #8a7435; --warn-ink: #ecd48e;
-  --pill-sage: #2b3d2c; --tabbar: rgba(28, 22, 25, .94); --on-sage: #12210f; --toast-bg: #4f6e4b; --vine-op: .5;
+  --pill-sage: #2b3d2c; --tabbar: rgba(21, 27, 23, .94); --on-sage: #12210f; --toast-bg: #4f6e4b; --vine-op: .5;
   --c-target: #cdb4e6; --c-caf: #a9cfa3; --c-decaf: #e0b457; --c-avg: #bfaee6;
-  --s0: #f0a9ba; --s1: #a9cfa3; --s2: #bfaee6; --s3: #e0b457; --s4: #86c5c7; --s5: #e48aa3;
+  --s0: #7fcfb0; --s1: #a9cfa3; --s2: #bfaee6; --s3: #e0b457; --s4: #86c5c7; --s5: #d9a07a;
+  --mod-bg: #40291f;
+  --mod-bd: #9c6247;
+  --mod-ink: #f0b79b;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -125,7 +131,7 @@ main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding
 }
 .seg button.on[data-v="0"] { background: var(--sage-bg); border-color: var(--sage); color: var(--sage-deep); }
 .seg button.on[data-v="1"] { background: var(--warn-bg); border-color: var(--warn-bd); color: var(--warn-ink); }
-.seg button.on[data-v="2"] { background: var(--blush); border-color: var(--rose); color: var(--rose-deep); }
+.seg button.on[data-v="2"] { background: var(--mod-bg); border-color: var(--mod-bd); color: var(--mod-ink); }
 .seg button.on[data-v="3"] { background: var(--lav-bg2); border-color: var(--lav-deep); color: var(--lav-ink); }
 
 textarea, input[type=number], input[type=time], input[type=date] {
@@ -238,3 +244,5 @@ input[type=text] {
 details.more { margin-top: 4px; border-top: 1.5px dashed var(--line); }
 details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep); font-weight: 600; min-height: 44px; }
 .nm1 { display: inline-flex; align-items: center; }
+
+:root[data-theme="dark"] .btn.rose { color: #10261b; }
