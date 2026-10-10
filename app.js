@@ -20,10 +20,17 @@ function defaults() {
     { id: 'tea', name: 'Tea', type: 'Tea', container: 'Cup', oz: 8, mg: 47, fav: false },
   ] } };
 }
+function normalize(s) {
+  const d = defaults(), out = Object.assign(d, s, { v: s.v, settings: Object.assign(d.settings, s.settings) });
+  if (!Array.isArray(out.settings.presets)) out.settings.presets = defaults().settings.presets;
+  if (!Array.isArray(out.pastPlans)) out.pastPlans = [];
+  ['hist', 'logs', 'sym'].forEach(k => { if (!out[k] || typeof out[k] !== 'object') out[k] = {}; });
+  return out;
+}
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s) { const d = defaults(); return Object.assign(d, s, { v: s.v, settings: Object.assign(d.settings, s.settings) }); }
+    if (s && typeof s === 'object') return normalize(s);
   } catch (e) { /* fall through */ }
   return defaults();
 }
@@ -94,7 +101,7 @@ function target(date) {
 }
 
 /* ---------- ui state ---------- */
-const ui = { newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']), showDecaf: false };
+const ui = { followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
 
 /* ---------- decoration ---------- */
 function vineSVG(horizontal) {
@@ -131,9 +138,8 @@ function toast(msg) {
 const n1 = v => String(Math.round(v * 10) / 10);
 function drinkMg(d) { const dr = S.logs[d]?.drinks || {}; return Object.values(dr).reduce((a, x) => a + x.n * x.mg, 0); }
 function totalMg(d) { const L = S.logs[d]; return L ? Math.round(L.caf * S.settings.canMg + drinkMg(d)) : 0; }
-// Everything caffeinated, expressed in "cans" so it can be compared with the daily target.
-function total(d) { const L = S.logs[d]; return L ? Math.round((L.caf + drinkMg(d) / S.settings.canMg) * 10) / 10 : null; }
 function setDrink(d, p, delta) {
+  if (delta < 0 && !S.logs[d]?.drinks?.[p.id]) return;
   const L = Object.assign({ caf: 0, decaf: 0 }, S.logs[d]); const dr = Object.assign({}, L.drinks);
   const cur = dr[p.id] || { n: 0, mg: p.mg, name: p.name };
   const n = clamp(cur.n + delta, 0, 99);
@@ -213,18 +219,19 @@ function drinkRow(p, dr) {
   return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-label="Toggle favorite">★</button>${esc(p.name)}</span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`)}</div>`;
 }
 function drinksCard(d, t) {
-  const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets;
+  const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets, mg = totalMg(d);
   const favs = P.filter(isFav), others = P.filter(p => !isFav(p));
   const open = ui.moreOpen || others.some(p => dr[p.id]);
   const opt = (arr, sel) => arr.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
+  const dft = ui.draft || {};
   const form = ui.newOpen ? `<div class="newdrink">
       <label class="f" for="nd-name">What is it?</label>
-      <input id="nd-name" type="text" placeholder="e.g. Diet Coke, iced latte" maxlength="40">
-      <div class="two"><div><label class="f" for="nd-type">Type</label><select id="nd-type">${opt(TYPES, 'Soda')}</select></div>
-        <div><label class="f" for="nd-cont">Container</label><select id="nd-cont">${opt(CONTAINERS, 'Can')}</select></div></div>
-      <div class="two"><div><label class="f" for="nd-oz">Size (oz, optional)</label><input id="nd-oz" type="number" inputmode="decimal" min="0" max="128" placeholder="12"></div>
-        <div><label class="f" for="nd-mg">Caffeine (mg)</label><input id="nd-mg" type="number" inputmode="numeric" min="0" max="1000" value="${TYPE_MG.Soda}"></div></div>
-      <div class="switch"><label for="nd-fav">Add to my favorites</label><input id="nd-fav" type="checkbox" checked></div>
+      <input id="nd-name" type="text" placeholder="e.g. Diet Coke, iced latte" maxlength="40" value="${esc(dft.name || '')}">
+      <div class="two"><div><label class="f" for="nd-type">Type</label><select id="nd-type">${opt(TYPES, dft.type || 'Soda')}</select></div>
+        <div><label class="f" for="nd-cont">Container</label><select id="nd-cont">${opt(CONTAINERS, dft.cont || 'Can')}</select></div></div>
+      <div class="two"><div><label class="f" for="nd-oz">Size (oz, optional)</label><input id="nd-oz" type="number" inputmode="decimal" min="0" max="128" placeholder="12" value="${esc(dft.oz || '')}"></div>
+        <div><label class="f" for="nd-mg">Caffeine (mg)</label><input id="nd-mg" type="number" inputmode="numeric" min="0" max="1000" value="${esc(dft.mg ?? TYPE_MG.Soda)}"></div></div>
+      <div class="switch"><label for="nd-fav">Add to my favorites</label><input id="nd-fav" type="checkbox" ${dft.fav === false ? '' : 'checked'}></div>
       <div class="btns"><button class="btn rose" data-act="savedrink">Save &amp; log one</button><button class="btn ghost" data-act="newdrink">Cancel</button></div>
     </div>` : '';
   return `<div class="card"><h2>Drinks</h2>
@@ -263,7 +270,7 @@ function vPlan() {
       <div class="row"><h2 style="margin:0">Your taper</h2>${p.pausedAt ? '<span class="pill">Paused</span>' : '<span class="pill sage">Active</span>'}</div>
       <p class="muted">${p.targets[0]} mg → 0 over ${p.targets.length} days · started ${short(p.start)}${p.fromBaseline ? ' · based on your 3-day baseline' : ''}${p.pausedAt ? ` · paused since ${short(p.pausedAt)}` : ''}</p>
       <div class="btns">
-        <button class="btn ${p.pausedAt ? 'rose' : 'ghost'}" data-act="${p.pausedAt ? 'resume' : 'pause'}">${p.pausedAt ? 'Resume taper' : 'Pause taper'}</button>
+        ${p.start > t && !p.pausedAt ? '<p class="muted" style="margin:0">Your taper starts tomorrow. You can pause once it’s underway.</p>' : `<button class="btn ${p.pausedAt ? 'rose' : 'ghost'}" data-act="${p.pausedAt ? 'resume' : 'pause'}">${p.pausedAt ? 'Resume taper' : 'Pause taper'}</button>`}
       </div>
     </div>
     <details class="card"><summary>Adjust from today</summary>
@@ -296,7 +303,7 @@ function chart({ dates, series, ymax }) {
   const W = 340, H = 190, Lm = 26, R = 10, T = 10, B = 24, pw = W - Lm - R, ph = H - T - B, n = dates.length;
   const x = i => Lm + (n < 2 ? pw / 2 : pw * i / (n - 1));
   const y = v => T + ph * (1 - v / ymax);
-  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find(q => ymax / q <= 5);
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000].find(q => ymax / q <= 5) || 2000;
   let g = '';
   for (let v = 0; v <= ymax; v += step) g += `<line x1="${Lm}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${cv('--line')}" stroke-width="1"/><text x="${Lm - 6}" y="${y(v) + 3}" text-anchor="end">${v}</text>`;
   const lab = Math.min(n, 5);
@@ -444,15 +451,18 @@ document.addEventListener('click', e => {
   if (tab) { ui.view = tab.dataset.view; render(); window.scrollTo(0, 0); return; }
   const el = e.target.closest('[data-act]'); if (!el) return;
   const act = el.dataset.act, d = ui.date, p = S.plan;
+  const nm = document.getElementById('nd-name');
+  if (nm) ui.draft = { name: nm.value, type: document.getElementById('nd-type').value, cont: document.getElementById('nd-cont').value,
+    oz: document.getElementById('nd-oz').value, mg: document.getElementById('nd-mg').value, fav: document.getElementById('nd-fav').checked };
   const L = () => S.logs[d] || { caf: 0, decaf: 0 };
   switch (act) {
-    case 'prev': ui.date = addDays(d, -1); break;
-    case 'next': if (d < today()) ui.date = addDays(d, 1); break;
+    case 'prev': ui.date = addDays(d, -1); ui.followToday = false; break;
+    case 'next': if (d < today()) { ui.date = addDays(d, 1); ui.followToday = ui.date === today(); } break;
     case 'caf+': setLog(d, { caf: Math.min(L().caf + 1, 99) }); break;
-    case 'caf-': setLog(d, { caf: Math.max(L().caf - 1, 0) }); break;
+    case 'caf-': if (L().caf > 0) setLog(d, { caf: L().caf - 1 }); break;
     case 'dr+': case 'dr-': { const pr = S.settings.presets.find(x => x.id === el.dataset.id); if (pr) setDrink(d, pr, act === 'dr+' ? 1 : -1); break; }
     case 'dec+': setLog(d, { decaf: Math.min(L().decaf + 1, 99) }); break;
-    case 'dec-': setLog(d, { decaf: Math.max(L().decaf - 1, 0) }); break;
+    case 'dec-': if (L().decaf > 0) setLog(d, { decaf: L().decaf - 1 }); break;
     case 'sev': setSym(d, { [el.dataset.k]: +el.dataset.v, done: true }); break;
     case 'savecheck': {
       setLog(d, {});
@@ -462,25 +472,26 @@ document.addEventListener('click', e => {
       break;
     }
     case 'range': ui.range = +el.dataset.v; break;
-    case 'decaf': ui.showDecaf = !ui.showDecaf; break;
     case 'symsel': {
       const k = el.dataset.k;
       if (ui.symSel.has(k)) { if (ui.symSel.size > 1) ui.symSel.delete(k); } else ui.symSel.add(k);
       break;
     }
     case 'start': {
-      const mgNow = clamp(parseInt(document.getElementById('stCans').value, 10) || 0, 5, 2000);
-      const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 0, 2, 365);
+      const rawMg = parseInt(document.getElementById('stCans').value, 10);
+      if (!(rawMg >= 5)) { toast('Enter your daily caffeine in mg (5 or more)'); return; }
+      const mgNow = clamp(rawMg, 5, 2000);
+      const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 28, 2, 365);
       if (S.plan) { snapshot(); S.pastPlans.push(S.plan); }
-      S.baseline = null;
+      S.baseline = null; ui.followToday = true;
       S.plan = { start: today(), targets: gen(mgNow, days), pausedAt: null };
       snapshot(); save(); ui.view = 'today'; ui.date = today(); toast('Your taper has begun 🌸');
       break;
     }
     case 'startunknown': {
-      const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 0, 2, 365);
+      const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 28, 2, 365);
       if (S.plan) { snapshot(); S.pastPlans.push(S.plan); S.plan = null; }
-      S.baseline = { start: today(), taperDays: days }; save(); ui.view = 'today'; ui.date = today();
+      S.baseline = { start: today(), taperDays: days }; save(); ui.view = 'today'; ui.date = today(); ui.followToday = true;
       toast('Great — log what you normally drink for 3 days 🌿'); break;
     }
     case 'cancelbaseline': S.baseline = null; save(); break;
@@ -495,7 +506,8 @@ document.addEventListener('click', e => {
       const from = clamp(parseInt(document.getElementById('adjFrom').value, 10) || 0, 0, 2000);
       const n = clamp(parseInt(document.getElementById('adjDays').value, 10) || 1, 1, 365);
       const i = planIdx(today()) ?? 0;
-      p.targets = p.targets.slice(0, i).concat(gen(from, n + 1));
+      const head = p.targets.slice(0, i); while (head.length < i) head.push(p.targets[p.targets.length - 1] ?? 0);
+      p.targets = head.concat(gen(from, n + 1));
       snapshot(); save(); toast('Schedule adjusted'); break;
     }
     case 'ed+': case 'ed-': {
@@ -505,14 +517,14 @@ document.addEventListener('click', e => {
     }
     case 'addpreset': S.settings.presets.push({ id: 'p' + Date.now().toString(36), name: 'New drink', type: 'Other', container: 'Can', oz: null, mg: 50, fav: false }); save(); break;
     case 'fav': { const pr = S.settings.presets.find(x => x.id === el.dataset.id); if (pr) { pr.fav = !isFav(pr); save(); } break; }
-    case 'newdrink': ui.newOpen = !ui.newOpen; break;
+    case 'newdrink': ui.newOpen = !ui.newOpen; ui.draft = null; break;
     case 'savedrink': {
       const name = document.getElementById('nd-name').value.trim();
       if (!name) { toast('Give it a name first'); return; }
       const oz = parseFloat(document.getElementById('nd-oz').value);
       const pr = { id: 'p' + Date.now().toString(36), name, type: document.getElementById('nd-type').value, container: document.getElementById('nd-cont').value,
         oz: oz > 0 ? oz : null, mg: clamp(parseInt(document.getElementById('nd-mg').value, 10) || 0, 0, 1000), fav: document.getElementById('nd-fav').checked };
-      S.settings.presets.push(pr); setDrink(d, pr, 1); ui.newOpen = false; toast(`Logged ${name}`); break;
+      S.settings.presets.push(pr); setDrink(d, pr, 1); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
     }
     case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
     case 'delpreset': S.settings.presets = S.settings.presets.filter(x => x.id !== el.dataset.id); save(); break;
@@ -522,7 +534,7 @@ document.addEventListener('click', e => {
     case 'import': document.getElementById('importFile').click(); return;
     case 'wipe':
       if (confirm('Erase all plans, logs and symptoms from this device? This can’t be undone.')) {
-        S = defaults(); save(); ui.view = 'today'; ui.date = today();
+        S = defaults(); save(); applyTheme(); ui.view = 'plan'; ui.date = today(); ui.followToday = true;
       } else return;
       break;
   }
@@ -558,7 +570,7 @@ document.addEventListener('change', async e => {
     try {
       const data = JSON.parse(await t.files[0].text());
       if (!data || typeof data !== 'object' || !('logs' in data)) throw new Error('bad');
-      S = Object.assign(defaults(), data, { v: data.v }); migrate(); save(); render(); toast('Backup restored');
+      S = normalize(data); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; render(); toast('Backup restored');
     } catch (err) { toast('That file doesn’t look like a backup'); }
   }
 });
@@ -574,7 +586,7 @@ async function testNotif() {
   if (!('Notification' in window)) return toast('Notifications aren’t supported here');
   if (Notification.permission === 'default') await Notification.requestPermission();
   if (Notification.permission !== 'granted') return toast('Notifications are blocked');
-  notify('Gentle Taper', 'A soft little reminder to log your cans and how you feel 🌿');
+  notify('Gentle Taper', 'A soft little reminder to log your drinks and how you feel 🌿');
 }
 function checkReminder() {
   const st = S.settings;
@@ -585,7 +597,7 @@ function checkReminder() {
   if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return;
   st.lastNotified = t; save();
   if (S.logs[t] && S.sym[t] && S.sym[t].done) return; // already checked in
-  notify('Gentle Taper', 'Time to log your cans and how you’re feeling 🌿');
+  notify('Gentle Taper', 'Time to log your drinks and how you’re feeling 🌿');
 }
 // Chrome-only experimental API; harmless no-op elsewhere.
 async function scheduleTrigger() {
@@ -597,17 +609,17 @@ async function scheduleTrigger() {
     const [h, m] = S.settings.time.split(':').map(Number);
     for (let k = 0; k < 7; k++) {
       const at = new Date(); at.setDate(at.getDate() + k); at.setHours(h, m, 0, 0);
-      if (at > new Date()) await reg.showNotification('Gentle Taper', { body: 'Time to log your cans and how you’re feeling 🌿', tag: 'taper-scheduled', icon: 'icons/icon-192.png', showTrigger: new TimestampTrigger(at.getTime()) });
+      if (at > new Date()) await reg.showNotification('Gentle Taper', { body: 'Time to log your drinks and how you’re feeling 🌿', tag: 'taper-scheduled', icon: 'icons/icon-192.png', showTrigger: new TimestampTrigger(at.getTime()) });
     }
   } catch (e) { /* ignore */ }
 }
 function downloadICS() {
   const [h, m] = S.settings.time.split(':').map(Number);
-  const s = new Date(); const stamp = `${fmt(s).replace(/-/g, '')}T${pad(h)}${pad(m)}00`;
+  const s = new Date(), stamp = `${fmt(s).replace(/-/g, '')}T${pad(h)}${pad(m)}00`, utc = s.toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
   const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Gentle Taper//EN', 'BEGIN:VEVENT',
-    `UID:gentle-taper-daily@local`, `DTSTAMP:${stamp}`, `DTSTART:${stamp}`, 'DURATION:PT10M', 'RRULE:FREQ=DAILY',
-    'SUMMARY:Log my cans & symptoms 🌿', 'DESCRIPTION:Open Gentle Taper and check in.',
-    'BEGIN:VALARM', 'TRIGGER:PT0M', 'ACTION:DISPLAY', 'DESCRIPTION:Log my cans & symptoms', 'END:VALARM',
+    `UID:gentle-taper-daily@local`, `DTSTAMP:${utc}`, `DTSTART:${stamp}`, 'DURATION:PT10M', 'RRULE:FREQ=DAILY',
+    'SUMMARY:Log my drinks & symptoms 🌿', 'DESCRIPTION:Open Gentle Taper and check in.',
+    'BEGIN:VALARM', 'TRIGGER:PT0M', 'ACTION:DISPLAY', 'DESCRIPTION:Log my drinks & symptoms', 'END:VALARM',
     'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
   saveBlob(new Blob([ics], { type: 'text/calendar' }), 'gentle-taper-reminder.ics');
 }
@@ -634,15 +646,14 @@ document.addEventListener('toggle', e => { if (e.target.classList && e.target.cl
 /* ---------- boot ---------- */
 applyTheme();
 applyDecor();
-if (!S.plan) ui.view = 'plan';
+if (!S.plan && !S.baseline) ui.view = 'plan';
 render();
 checkReminder(); scheduleTrigger();
-setInterval(checkReminder, 30000);
+// If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
+function rollover() { if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
+setInterval(() => { checkReminder(); rollover(); }, 30000);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    if (ui.date === today() || ui.date > today()) ui.date = today();
-    checkReminder(); render();
-  }
+  if (document.visibilityState === 'visible') { rollover(); checkReminder(); }
 });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is optional */ });
