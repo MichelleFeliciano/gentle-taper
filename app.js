@@ -13,7 +13,7 @@ const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Shot', 'Glass'];
 const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function defaults() {
-  return { v: 2, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', presets: [
+  return { v: 2, water: {}, ms: {}, pace: {}, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', cutoff: '14:00', lastExport: '', nudgeSnooze: '', presets: [
     { id: 'soda', name: 'Soda', type: 'Soda', container: 'Bottle', oz: 20, mg: 57, fav: true },
     { id: 'coffee', name: 'Coffee', type: 'Coffee', container: 'Cup', oz: 8, mg: 95, fav: true },
     { id: 'energy', name: 'Energy drink', type: 'Energy drink', container: 'Can', oz: 16, mg: 160, fav: false },
@@ -24,7 +24,7 @@ function normalize(s) {
   const d = defaults(), out = Object.assign(d, s, { v: s.v, settings: Object.assign(d.settings, s.settings) });
   if (!Array.isArray(out.settings.presets)) out.settings.presets = defaults().settings.presets;
   if (!Array.isArray(out.pastPlans)) out.pastPlans = [];
-  ['hist', 'logs', 'sym'].forEach(k => { if (!out[k] || typeof out[k] !== 'object') out[k] = {}; });
+  ['hist', 'logs', 'sym', 'water', 'ms', 'pace'].forEach(k => { if (!out[k] || typeof out[k] !== 'object') out[k] = {}; });
   return out;
 }
 function load() {
@@ -138,6 +138,63 @@ function toast(msg) {
 const n1 = v => String(Math.round(v * 10) / 10);
 function drinkMg(d) { const dr = S.logs[d]?.drinks || {}; return Object.values(dr).reduce((a, x) => a + x.n * x.mg, 0); }
 function totalMg(d) { const L = S.logs[d]; return L ? Math.round(L.caf * S.settings.canMg + drinkMg(d)) : 0; }
+const fmtTime = t => { const [h, m] = t.split(':').map(Number); return `${h % 12 || 12}:${pad(m)} ${h < 12 ? 'am' : 'pm'}`; };
+function stamp(d) {
+  if (d !== today() || !S.logs[d]) return;
+  const n = new Date(); S.logs[d].lastCaf = `${pad(n.getHours())}:${pad(n.getMinutes())}`; save();
+}
+function streakOf(ok) {
+  let n = 0;
+  for (let d = today(); n < 800; d = addDays(d, -1)) {
+    if (d === today() && !S.logs[d]) continue;
+    if (S.logs[d] && ok(d)) n++; else break;
+  }
+  return n;
+}
+const streakNow = () => streakOf(d => target(d) != null && totalMg(d) <= target(d));
+// days with no caffeine, or whose last caffeine was before the cutoff time
+const cutoffStreak = () => streakOf(d => totalMg(d) === 0 || (S.logs[d].lastCaf && S.logs[d].lastCaf <= S.settings.cutoff));
+const MILESTONES = [['s7', '7 days on target', 'A whole week on target — that’s real progress. 🌿'],
+  ['s14', '14 days on target', 'Two weeks of steady care. Be proud of yourself. 🌱'],
+  ['zero', 'First caffeine-free day', 'Your first caffeine-free day. 🌸']];
+function checkMilestones() {
+  if (!S.plan) return;
+  const t = today(), st = streakNow();
+  const set = (k, v) => { if (!S.ms[k]) { S.ms[k] = v; save(); toast(MILESTONES.find(m => m[0] === k)[2]); } };
+  if (st >= 7) set('s7', t);
+  if (st >= 14) set('s14', t);
+  if (!S.ms.zero) {
+    const z = Object.keys(S.logs).filter(d => d >= S.plan.start && d <= t && totalMg(d) === 0).sort()[0];
+    if (z) set('zero', z);
+  }
+}
+// Suggest easing off when the last three check-ins have been rough.
+function paceAlert() {
+  const p = S.plan, t = today();
+  if (!p || p.pausedAt || p.start > t || ui.date !== t) return null;
+  if (planIdx(t) >= p.targets.length - 1) return null;
+  if (S.pace.snooze && S.pace.snooze >= t) return null;
+  const days = Object.keys(S.sym).filter(d => S.sym[d].done && d <= t && d >= addDays(t, -4)).sort().slice(-3);
+  if (days.length < 3) return null;
+  const m = avg(days.map(d => symVal(d, 'avg')));
+  const peaks = days.filter(d => SYMS.some(([k]) => (S.sym[d][k] ?? 0) >= 3)).length;
+  return m >= 1.5 || peaks >= 2 ? { m } : null;
+}
+
+/* ---------- automatic safety copies ---------- */
+const BK = 'gentle-taper-backups';
+function readBackups() { try { return JSON.parse(localStorage.getItem(BK)) || []; } catch (e) { return []; } }
+function pushBackup(label) {
+  if (!Object.keys(S.logs).length && !S.plan) return;
+  try {
+    let b = readBackups();
+    if (!label && b.some(x => x.date === today() && !x.label)) return;
+    b.push({ date: today(), label: label || '', ts: Date.now(), json: JSON.stringify(S) });
+    b = [...b.filter(x => !x.label).slice(-7), ...b.filter(x => x.label).slice(-5)].sort((x, y) => x.ts - y.ts);
+    localStorage.setItem(BK, JSON.stringify(b));
+  } catch (e) { /* storage full: skip */ }
+}
+
 function setDrink(d, p, delta) {
   if (delta < 0 && !S.logs[d]?.drinks?.[p.id]) return;
   const L = Object.assign({ caf: 0, decaf: 0 }, S.logs[d]); const dr = Object.assign({}, L.drinks);
@@ -153,6 +210,7 @@ function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(
 function render() {
   checkBaseline();
   snapshot();
+  checkMilestones();
   const y = window.scrollY;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === ui.view));
   const sub = document.getElementById('subtitle');
@@ -199,11 +257,13 @@ function vToday() {
       <button class="round" data-act="next" aria-label="Next day" ${isToday ? 'disabled' : ''}>›</button>
     </div>
     ${hero}
+    ${alertCards()}
     <div class="card"><h2>Cans I had</h2>
       <div class="counter"><div class="name">Caffeinated cans<small>quick count, no details</small></div>${stepper('caf', caf)}</div>
       <div class="counter"><div class="name">Caffeine-free<small>just for the record</small></div>${stepper('dec', dec, 'sage')}</div>
     </div>
     ${drinksCard(d, t)}
+    ${loggedCard(d)}
     <div class="card"><h2>How am I feeling?</h2>
       ${SYMS.map(([k, name]) => `<div class="sym"><div class="nm">${name}</div>
         <div class="seg">${SEV.map((s, v) => `<button data-act="sev" data-k="${k}" data-v="${v}" class="${(Y[k] ?? 0) === v ? 'on' : ''}">${s}</button>`).join('')}</div></div>`).join('')}
@@ -211,6 +271,41 @@ function vToday() {
       <textarea id="notes" placeholder="Anything worth remembering…">${esc(Y.notes || '')}</textarea>
     </div>
     <button class="btn rose block" data-act="savecheck">${L && Y.done ? 'Update check-in' : 'Save today’s check-in'}</button>`;
+}
+
+function alertCards() {
+  const t = today(); let h = '';
+  MILESTONES.forEach(([k, label, msg]) => { if (S.ms[k] && S.ms[k] >= addDays(t, -1)) h += `<div class="card note"><b>${esc(label)}</b><br>${esc(msg)}</div>`; });
+  const pa = paceAlert();
+  if (pa) h += `<div class="card alert"><h2>Be kind to yourself</h2>
+    <p>Your symptoms have been rough lately (about ${pa.m.toFixed(1)} out of 3). That’s common while tapering — you don’t have to keep stepping down on schedule.</p>
+    <div class="btns"><button class="btn rose" data-act="hold">Hold steady 3 days</button><button class="btn ghost" data-act="pause">Pause taper</button><button class="btn ghost" data-act="snooze">Not now</button></div>
+    <p class="muted" style="margin:10px 0 0">If symptoms ever feel severe, please check in with a doctor.</p></div>`;
+  const exp = S.settings.lastExport, snooze = S.settings.nudgeSnooze;
+  if (ui.date === t && Object.keys(S.logs).length >= 3 && (!exp || diff(exp, t) >= 7) && !(snooze && snooze >= t))
+    h += `<div class="card note"><b>Save a backup?</b><br>${exp ? `It’s been ${diff(exp, t)} days since you exported one.` : 'You haven’t exported a copy yet.'} Saving one to Files or Drive keeps your history safe.
+      <div class="btns"><button class="btn" data-act="export">Export now</button><button class="btn ghost" data-act="nudgelater">Later</button></div></div>`;
+  return h;
+}
+function loggedCard(d) {
+  const L = S.logs[d]; if (!L) return '';
+  const ent = Object.entries(L.drinks || {});
+  if (!ent.length && !L.caf) return '';
+  return `<div class="card"><h2>Logged this day</h2>
+    <p class="muted" style="margin-top:-4px">Fix a name or caffeine amount, change a count, or remove a drink.</p>
+    ${L.caf ? `<div class="lrow"><div class="lname"><b>Caffeinated cans</b><small>${L.caf} × ${S.settings.canMg} mg</small></div><button class="round" data-act="delcans" aria-label="Remove cans">×</button></div>` : ''}
+    ${ent.map(([id, e]) => `<div class="lrow"><div class="lname"><input data-did="${esc(id)}" data-f="name" value="${esc(e.name)}" aria-label="Name"><small>${e.n} × ${e.mg} mg = ${e.n * e.mg} mg</small></div>
+      <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-did="${esc(id)}" data-f="mg" value="${e.mg}" aria-label="mg each"><span class="muted">mg</span>
+      ${stepper('dr', e.n, '', `data-id="${esc(id)}"`)}
+      <button class="round" data-act="deldrink" data-id="${esc(id)}" aria-label="Remove">×</button></div>`).join('')}
+    <div class="btns"><button class="btn danger" data-act="delday">Clear this day’s drinks</button></div></div>`;
+}
+const waterRow = d => `<div class="counter"><div class="name">Water<small>glasses — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage')}</div>`;
+function lastCafRow(d) {
+  if (totalMg(d) === 0) return '';
+  const lc = S.logs[d]?.lastCaf || '', cut = S.settings.cutoff;
+  const note = lc ? (lc <= cut ? `Before your ${fmtTime(cut)} cutoff 🌿` : `After your ${fmtTime(cut)} cutoff — an earlier last cup can help sleep.`) : 'Add a time to track your cutoff streak.';
+  return `<div class="lastcaf"><div class="row"><label for="lastCaf" style="font-weight:600">Last caffeine at</label><input id="lastCaf" type="time" value="${lc}" style="width:auto"></div><p class="muted" style="margin:4px 0 0">${note}</p></div>`;
 }
 
 const isFav = p => p.fav !== false;
@@ -239,6 +334,7 @@ function drinksCard(d, t) {
       ${favs.length ? favs.map(p => drinkRow(p, dr)).join('') : '<p class="muted">No favorites yet — star a drink below or add a new one.</p>'}
       ${others.length ? `<details class="more" ${open ? 'open' : ''}><summary>More drinks (${others.length})</summary>${others.map(p => drinkRow(p, dr)).join('')}</details>` : ''}
       ${ui.newOpen ? form : '<div class="btns"><button class="btn ghost" data-act="newdrink">+ New drink</button></div>'}
+      ${waterRow(d)}${lastCafRow(d)}
       <div class="totals"><b>${totalMg(d)} mg</b> caffeine today<br><span class="muted">${t != null ? `target ${t} mg` : 'no target yet'}${t != null && mg <= t ? ` · ${t - mg} mg to spare` : t != null ? ` · ${mg - t} mg over` : ''}</span></div>
     </div>`;
 }
@@ -355,12 +451,10 @@ function vProgress() {
   const onTrack = logged.filter(d => totalMg(d) <= target(d)).length;
   const recent = Object.keys(S.logs).sort().slice(-7);
   const avgMg = recent.length ? Math.round(avg(recent.map(totalMg))) : 0;
-  let streak = 0;
-  for (let d = today(); ; d = addDays(d, -1)) {
-    if (d === today() && !S.logs[d]) continue;
-    if (S.logs[d] && target(d) != null && totalMg(d) <= target(d)) streak++; else break;
-    if (streak > 800) break;
-  }
+  const streak = streakNow(), cut = cutoffStreak();
+  const zeroDays = Object.keys(S.logs).filter(d => totalMg(d) === 0).length;
+  const wd = Object.keys(S.water).filter(d => S.water[d] > 0).sort().slice(-7);
+  const avgWater = wd.length ? n1(avg(wd.map(d => S.water[d]))) : '—';
 
   // symptom trend
   const keys = [...ui.symSel];
@@ -390,7 +484,14 @@ function vProgress() {
       <div class="stat"><b>${onTrack}</b><span>days at or under target</span></div>
       <div class="stat"><b>${streak}</b><span>day streak on target</span></div>
       <div class="stat"><b>${skipped}</b><span>mg cut vs. your start, in total</span></div>
-      <div class="stat"><b>${avgMg}</b><span>avg mg caffeine / day (last 7 logged)</span></div></div></div>
+      <div class="stat"><b>${avgMg}</b><span>avg mg caffeine / day (last 7 logged)</span></div>
+      <div class="stat"><b>${cut}</b><span>day streak, last caffeine before ${fmtTime(S.settings.cutoff)}</span></div>
+      <div class="stat"><b>${zeroDays}</b><span>caffeine-free days</span></div>
+      <div class="stat"><b>${avgWater}</b><span>avg glasses of water / day</span></div></div></div>
+    <div class="card"><h2>Milestones</h2>
+      ${MILESTONES.map(([k, label]) => S.ms[k] ? `<div class="ms done">🌿 ${esc(label)} <span class="muted">· ${short(S.ms[k])}</span></div>`
+        : `<div class="ms">○ ${esc(label)}${k !== 'zero' ? ` <span class="muted">· ${Math.min(streak, k === 's7' ? 7 : 14)} / ${k === 's7' ? 7 : 14}</span>` : ''}</div>`).join('')}
+    </div>
     <div class="card"><h2>Symptoms over time</h2>
       <p class="muted" style="margin-top:-4px">0 = none, 3 = strong. Lower is better.</p>
       <div class="chips"><button class="chip ${ui.symSel.has('avg') ? 'on' : ''}" data-act="symsel" data-k="avg">Overall</button>
@@ -422,6 +523,9 @@ function vSettings() {
       <p class="muted" style="margin-top:-4px">Used for the quick “Caffeinated cans” counter. Adjust to match what you actually drink.</p>
       <label class="f" for="canMg">Caffeine in one can (mg)</label>
       <input id="canMg" type="number" inputmode="numeric" min="1" max="500" value="${st.canMg}">
+      <label class="f" for="cutoff">Caffeine cutoff time</label>
+      <input id="cutoff" type="time" value="${st.cutoff}">
+      <p class="muted" style="margin:4px 0 0">Used for the “last caffeine before…” streak. Many people sleep better with none after early afternoon.</p>
       <h3>My drinks</h3>
       ${st.presets.map(p => `<div class="dedit">
         <div class="preset"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-label="Toggle favorite">★</button>
@@ -434,13 +538,15 @@ function vSettings() {
       </div>`).join('')}
       <div class="btns"><button class="btn ghost" data-act="addpreset">+ Add a drink</button></div>
     </div>
-    <div class="card"><h2>Your data</h2>
-      <p class="muted">Everything lives only on this device.</p>
-      <div class="btns">
-        <button class="btn ghost" data-act="export">Export backup</button>
-        <button class="btn ghost" data-act="import">Import backup</button>
-      </div>
+    <div class="card"><h2>Backups</h2>
+      <p class="muted" style="margin-top:-4px">A safety copy is saved on this phone automatically each day (last 7), plus one before anything risky like erasing. They guard against mistakes in the app — but they live in the browser, so clearing site data removes them. Export a copy to Files or Drive now and then to keep your history safe.</p>
+      <p class="muted">Last exported: ${st.lastExport ? nice(st.lastExport) : 'never'}</p>
+      <div class="btns"><button class="btn" data-act="export">Export backup</button><button class="btn ghost" data-act="import">Import backup</button></div>
       <input id="importFile" type="file" accept="application/json" hidden>
+      ${(() => { const b = readBackups().slice().reverse(); return b.length ? `<h3>Safety copies on this phone</h3>${b.map(x => `<div class="lrow"><div class="lname"><b>${x.label ? esc(x.label) : 'Automatic'}</b><small>${nice(x.date)}</small></div><button class="btn ghost" style="min-height:40px;padding:8px 14px" data-act="restore" data-ts="${x.ts}">Restore</button></div>`).join('')}<div class="btns"><button class="btn ghost" data-act="delbackups">Delete safety copies</button></div>` : ''; })()}
+    </div>
+    <div class="card"><h2>Erase</h2>
+      <p class="muted" style="margin-top:-4px">Removes all plans, logs and symptoms. A safety copy is kept so you can undo it.</p>
       <div class="btns"><button class="btn danger" data-act="wipe">Erase everything</button></div>
     </div>`;
 }
@@ -458,9 +564,38 @@ document.addEventListener('click', e => {
   switch (act) {
     case 'prev': ui.date = addDays(d, -1); ui.followToday = false; break;
     case 'next': if (d < today()) { ui.date = addDays(d, 1); ui.followToday = ui.date === today(); } break;
-    case 'caf+': setLog(d, { caf: Math.min(L().caf + 1, 99) }); break;
+    case 'caf+': setLog(d, { caf: Math.min(L().caf + 1, 99) }); stamp(d); break;
     case 'caf-': if (L().caf > 0) setLog(d, { caf: L().caf - 1 }); break;
-    case 'dr+': case 'dr-': { const pr = S.settings.presets.find(x => x.id === el.dataset.id); if (pr) setDrink(d, pr, act === 'dr+' ? 1 : -1); break; }
+    case 'dr+': case 'dr-': {
+      const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id];
+      const pr = S.settings.presets.find(x => x.id === id) || (ent ? { ...ent, id } : null);
+      if (pr) { setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && (ent ? ent.mg : pr.mg) > 0) stamp(d); }
+      break;
+    }
+    case 'wat+': S.water[d] = Math.min((S.water[d] || 0) + 1, 30); save(); break;
+    case 'wat-': if (S.water[d] > 0) { S.water[d]--; save(); } break;
+    case 'hold': {
+      snapshot();
+      const i = planIdx(today()) ?? 0, cur = target(today());
+      const head = p.targets.slice(0, i); while (head.length < i) head.push(p.targets[p.targets.length - 1] ?? 0);
+      p.targets = head.concat([cur, cur], p.targets.slice(i));
+      S.pace.snooze = addDays(today(), 3); snapshot(); save(); toast('Holding steady for 3 days. You’re doing fine 🌿'); break;
+    }
+    case 'snooze': S.pace.snooze = addDays(today(), 2); save(); break;
+    case 'nudgelater': S.settings.nudgeSnooze = addDays(today(), 3); save(); break;
+    case 'deldrink': { const L2 = S.logs[d]; if (L2?.drinks) { const dr2 = { ...L2.drinks }; delete dr2[el.dataset.id]; setLog(d, { drinks: dr2 }); } break; }
+    case 'delcans': setLog(d, { caf: 0 }); break;
+    case 'delday':
+      if (confirm('Remove all drinks logged for this day? Your symptoms for the day stay.')) { delete S.logs[d]; delete S.water[d]; save(); } else return;
+      break;
+    case 'restore': {
+      const e = readBackups().find(x => x.ts === +el.dataset.ts);
+      if (e && confirm('Replace everything in the app with this safety copy? Your current data is saved as a safety copy first.')) {
+        pushBackup('Before restore'); S = normalize(JSON.parse(e.json)); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; toast('Restored');
+      } else return;
+      break;
+    }
+    case 'delbackups': if (confirm('Delete all safety copies from this phone?')) { try { localStorage.removeItem(BK); } catch (err) { /* ignore */ } } else return; break;
     case 'dec+': setLog(d, { decaf: Math.min(L().decaf + 1, 99) }); break;
     case 'dec-': if (L().decaf > 0) setLog(d, { decaf: L().decaf - 1 }); break;
     case 'sev': setSym(d, { [el.dataset.k]: +el.dataset.v, done: true }); break;
@@ -524,7 +659,7 @@ document.addEventListener('click', e => {
       const oz = parseFloat(document.getElementById('nd-oz').value);
       const pr = { id: 'p' + Date.now().toString(36), name, type: document.getElementById('nd-type').value, container: document.getElementById('nd-cont').value,
         oz: oz > 0 ? oz : null, mg: clamp(parseInt(document.getElementById('nd-mg').value, 10) || 0, 0, 1000), fav: document.getElementById('nd-fav').checked };
-      S.settings.presets.push(pr); setDrink(d, pr, 1); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
+      S.settings.presets.push(pr); setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
     }
     case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
     case 'delpreset': S.settings.presets = S.settings.presets.filter(x => x.id !== el.dataset.id); save(); break;
@@ -533,8 +668,8 @@ document.addEventListener('click', e => {
     case 'export': exportData(); return;
     case 'import': document.getElementById('importFile').click(); return;
     case 'wipe':
-      if (confirm('Erase all plans, logs and symptoms from this device? This can’t be undone.')) {
-        S = defaults(); save(); applyTheme(); ui.view = 'plan'; ui.date = today(); ui.followToday = true;
+      if (confirm('Erase all plans, logs and symptoms from this device? A safety copy is kept under Backups so you can undo it.')) {
+        pushBackup('Before erase'); S = defaults(); save(); applyTheme(); ui.view = 'plan'; ui.date = today(); ui.followToday = true;
       } else return;
       break;
   }
@@ -564,13 +699,20 @@ document.addEventListener('change', async e => {
       else p[f] = t.value;
       save(); toast('Saved');
     }
+  } else if (t.id === 'lastCaf') {
+    setLog(ui.date, { lastCaf: t.value || null }); render();
+  } else if (t.id === 'cutoff') {
+    S.settings.cutoff = t.value || '14:00'; save(); toast('Saved');
+  } else if (t.dataset.did) {
+    const en = S.logs[ui.date]?.drinks?.[t.dataset.did];
+    if (en) { if (t.dataset.f === 'mg') en.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); else en.name = t.value.trim() || en.name; save(); render(); }
   } else if (t.id === 'remTime') {
     S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
     try {
       const data = JSON.parse(await t.files[0].text());
       if (!data || typeof data !== 'object' || !('logs' in data)) throw new Error('bad');
-      S = normalize(data); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; render(); toast('Backup restored');
+      pushBackup('Before import'); S = normalize(data); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; render(); toast('Backup restored');
     } catch (err) { toast('That file doesn’t look like a backup'); }
   }
 });
@@ -623,8 +765,14 @@ function downloadICS() {
     'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
   saveBlob(new Blob([ics], { type: 'text/calendar' }), 'gentle-taper-reminder.ics');
 }
-function exportData() {
-  saveBlob(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' }), `gentle-taper-backup-${today()}.json`);
+async function exportData() {
+  const json = JSON.stringify(S, null, 2), name = `gentle-taper-backup-${today()}.json`;
+  const done = () => { S.settings.lastExport = today(); save(); render(); toast('Backup exported'); };
+  try {
+    const file = new File([json], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Gentle Taper backup' }); return done(); }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  saveBlob(new Blob([json], { type: 'application/json' }), name); done();
 }
 function saveBlob(blob, name) {
   const a = document.createElement('a');
@@ -646,11 +794,12 @@ document.addEventListener('toggle', e => { if (e.target.classList && e.target.cl
 /* ---------- boot ---------- */
 applyTheme();
 applyDecor();
+pushBackup();
 if (!S.plan && !S.baseline) ui.view = 'plan';
 render();
 checkReminder(); scheduleTrigger();
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
-function rollover() { if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
+function rollover() { pushBackup(); if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
 setInterval(() => { checkReminder(); rollover(); }, 30000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { rollover(); checkReminder(); }
