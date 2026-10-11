@@ -265,3 +265,6 @@ details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep)
 :focus-visible { outline: 3px solid var(--lav-deep); outline-offset: 2px; border-radius: 10px; }
 .wk { margin: 0; padding-left: 18px; }
 .wk li { margin: 4px 0; }
+
+.codebox { margin: 10px 0 4px; padding: 12px; border: 2px dashed var(--sage); border-radius: 18px; background: var(--sage-bg); }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; font-weight: 700; letter-spacing: 0; white-space: nowrap; text-align: center; user-select: all; -webkit-user-select: all; }

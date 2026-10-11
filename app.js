@@ -13,10 +13,12 @@ const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Shot', 'Glass'];
 // Push reminders: a small Cloudflare Worker (see /worker) sends a silent push at your reminder time.
 const PUSH_URL = 'https://gentle-taper-push.michellefeliciano.workers.dev';
 const PUSH_KEY = 'BPHoUIzOrOvN_ZCYwSIz0MtfsQOAU7RaiAPcQBT4KvjTNUony1ux9FJ4oqvqM7JTqxvF-jakowvk4C1Eg-61KXw';
+const CLOUD_KEY = 'gentle-taper-cloud'; // recovery code + last upload time (kept out of S so it never lands in exports)
+let cloudT = null, cloudBusy = false, cloudPending = false;
 const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function defaults() {
-  return { v: 2, water: {}, ms: {}, pace: {}, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', cutoff: '14:00', lastExport: '', nudgeSnooze: '', presets: [
+  return { v: 2, water: {}, ms: {}, pace: {}, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', cutoff: '14:00', evening: false, eveningTime: '20:00', touchedPing: '', lastExport: '', nudgeSnooze: '', presets: [
     { id: 'soda', name: 'Soda', type: 'Soda', container: 'Bottle', oz: 20, mg: 57, fav: true },
     { id: 'coffee', name: 'Coffee', type: 'Coffee', container: 'Cup', oz: 8, mg: 95, fav: true },
     { id: 'energy', name: 'Energy drink', type: 'Energy drink', container: 'Can', oz: 16, mg: 160, fav: false },
@@ -50,6 +52,7 @@ function migrate() {
 migrate();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save on this device'); }
+  cloudDirty();
 }
 
 /* ---------- dates ---------- */
@@ -108,7 +111,7 @@ function target(date) {
 }
 
 /* ---------- ui state ---------- */
-const ui = { openRestart: false, followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
+const ui = { showCode: false, openRestart: false, followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
 
 /* ---------- decoration ---------- */
 function vineSVG(horizontal) {
@@ -275,7 +278,7 @@ function setDrink(d, p, delta) {
   if (n) dr[p.id] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name, type: p.type || '', container: p.container || '' }; else delete dr[p.id];
   setLog(d, { drinks: dr });
 }
-function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); }
+function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); if (d === today()) pushTouch(); }
 function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(); }
 
 /* ---------- views ---------- */
@@ -602,7 +605,8 @@ function vSettings() {
       <div class="switch"><label for="remOn">Remind me to log</label><input id="remOn" type="checkbox" ${st.remind ? 'checked' : ''}></div>
       <label class="f" for="remTime">Reminder time</label>
       <input id="remTime" type="time" value="${st.time}">
-      <p class="muted" style="margin-top:10px">${!supported ? 'This browser doesn’t support notifications.' : perm === 'denied' ? 'Notifications are blocked for this site — enable them in your browser settings.' : st.remind && st.push ? 'Push reminders are on: you’ll get a notification at this time even when the app is closed (skipped if you’ve already checked in).' : 'On a phone, add the app to your home screen first. ' + (pushSupported() ? 'Turn this on for reminders that arrive even when the app is closed.' : 'Reminders fire when the app has been opened that day; for a guaranteed daily nudge, also add it to your calendar below.')}</p>
+      ${st.push ? `<div class="switch" style="margin-top:8px"><label for="eveOn">Evening follow-up if my check-in isn’t saved</label><input id="eveOn" type="checkbox" ${st.evening ? 'checked' : ''}></div>${st.evening ? `<label class="f" for="eveTime">Follow-up time (at least 2 hours after the reminder)</label><input id="eveTime" type="time" value="${st.eveningTime}">` : ''}` : ''}
+      <p class="muted" style="margin-top:10px">${!supported ? 'This browser doesn’t support notifications.' : perm === 'denied' ? 'Notifications are blocked for this site — enable them in your browser settings.' : st.remind && st.push ? 'Push reminders are on: you’ll get a notification at this time even when the app is closed (skipped once you’ve logged something that day).' : 'On a phone, add the app to your home screen first. ' + (pushSupported() ? 'Turn this on for reminders that arrive even when the app is closed.' : 'Reminders fire when the app has been opened that day; for a guaranteed daily nudge, also add it to your calendar below.')}</p>
       <div class="btns">
         <button class="btn ghost" data-act="testnotif">Send a test</button>
         <button class="btn ghost" data-act="ics">Add to calendar (.ics)</button>
@@ -634,6 +638,7 @@ function vSettings() {
       <input id="importFile" type="file" accept="application/json" hidden>
       ${(() => { const b = readBackups().slice().reverse(); return b.length ? `<h3>Safety copies on this phone</h3>${b.map(x => `<div class="lrow"><div class="lname"><b>${x.label ? esc(x.label) : 'Automatic'}</b><small>${nice(x.date)}</small></div><button class="btn ghost" style="min-height:40px;padding:8px 14px" data-act="restore" data-ts="${x.ts}">Restore</button></div>`).join('')}<div class="btns"><button class="btn ghost" data-act="delbackups">Delete safety copies</button></div>` : ''; })()}
     </div>
+    ${cloudCard()}
     <div class="card"><h2>Erase</h2>
       <p class="muted" style="margin-top:-4px">Removes all plans, logs and symptoms. A safety copy is kept so you can undo it.</p>
       <div class="btns"><button class="btn danger" data-act="wipe">Erase everything</button></div>
@@ -766,6 +771,12 @@ document.addEventListener('click', e => {
     }
     case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
     case 'delpreset': S.settings.presets = S.settings.presets.filter(x => x.id !== el.dataset.id); save(); break;
+    case 'cloudon': cloudOn(); return;
+    case 'cloudnow': cloudBackupNow(true); return;
+    case 'cloudcode': ui.showCode = !ui.showCode; break;
+    case 'copycode': { const c = getCloud(); if (c && navigator.clipboard) navigator.clipboard.writeText(c.code).then(() => toast('Copied')).catch(() => toast('Select the code and copy it')); else toast('Select the code and copy it'); return; }
+    case 'cloudoff': if (confirm('Turn off cloud backup and delete the cloud copy? Your data on this phone stays.')) { cloudOff(); } return;
+    case 'cloudrestore': cloudRestore(+el.dataset.gen || 0); return;
     case 'testnotif': testNotif(); return;
     case 'ics': downloadICS(); return;
     case 'export': exportData(); return;
@@ -794,6 +805,10 @@ document.addEventListener('change', async e => {
       if (pushSupported() && !S.settings.push) toast('Couldn’t reach the reminder service — using on-device reminders');
     } else { await disablePush(); S.settings.push = false; }
     save(); scheduleTrigger(); render();
+  } else if (t.id === 'eveOn') {
+    S.settings.evening = t.checked; save(); syncPushDaily(true); render();
+  } else if (t.id === 'eveTime') {
+    S.settings.eveningTime = t.value || '20:00'; save(); syncPushDaily(true); toast('Follow-up time saved');
   } else if (t.id === 'canMg') {
     S.settings.canMg = clamp(parseInt(t.value, 10) || 40, 1, 500); save(); toast('Saved');
   } else if (t.id === 'nd-type') {
@@ -836,7 +851,7 @@ async function pushPost(path, body) {
   return r.json();
 }
 async function syncPush(sub) {
-  await pushPost('/subscribe', { subscription: sub.toJSON(), time: S.settings.time, tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  await pushPost('/subscribe', { subscription: sub.toJSON(), time: S.settings.time, evening: S.settings.evening ? S.settings.eveningTime : '', tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
   S.settings.pushSynced = today(); save();
 }
 let pushBusy = false;
@@ -856,6 +871,15 @@ async function disablePush() {
     if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); await pushPost('/unsubscribe', { endpoint: ep }).catch(() => {}); }
   } catch (e) { /* ignore */ } finally { pushBusy = false; }
 }
+let touchBusy = false;
+async function pushTouch() { // first log of the day: the server then skips the main reminder
+  if (touchBusy || !S.settings.push || !pushSupported() || S.settings.touchedPing === today()) return;
+  touchBusy = true;
+  try {
+    const sub = await (await swReady()).pushManager.getSubscription();
+    if (sub) { await pushPost('/touch', { endpoint: sub.endpoint, date: today() }); S.settings.touchedPing = today(); save(); }
+  } catch (e) { /* ignore */ } finally { touchBusy = false; }
+}
 async function pushDone() { // tell the server we've checked in today so it skips the reminder
   if (!S.settings.push || !pushSupported()) return;
   try { const sub = await (await swReady()).pushManager.getSubscription(); if (sub) await pushPost('/done', { endpoint: sub.endpoint, date: today() }); } catch (e) { /* ignore */ }
@@ -870,6 +894,117 @@ async function syncPushDaily(force) {
     if (!(S.settings.remind && S.settings.push)) { await disablePush(); return; }
     if (force || S.settings.pushSynced !== today()) await syncPush(sub);
   } catch (e) { /* ignore */ }
+}
+
+/* ---------- encrypted cloud backup ---------- */
+// Everything is encrypted on this device with a key derived from a recovery code that never leaves it.
+// The service stores only ciphertext under an ID derived from the same code, so it can't read anything.
+const getCloud = () => { try { return JSON.parse(localStorage.getItem(CLOUD_KEY)); } catch (e) { return null; } };
+const setCloud = c => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ } };
+const CROCK = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const hasData = () => Object.keys(S.logs).length > 0 || !!S.plan || !!S.baseline;
+const b64 = buf => { const u = new Uint8Array(buf); let out = ''; for (let i = 0; i < u.length; i += 0x8000) out += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(out); };
+const b64url = buf => b64(buf).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+function newCode() {
+  const r = crypto.getRandomValues(new Uint8Array(25)); let c = '';
+  for (let i = 0; i < 25; i++) { c += CROCK[r[i] & 31]; if (i % 5 === 4 && i < 24) c += '-'; }
+  return c;
+}
+function normCode(t) { // forgiving about case, dashes, spaces and look-alike letters
+  const c = String(t || '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1').replace(/[^0-9A-Z]/g, '');
+  return c.length === 25 && [...c].every(ch => CROCK.includes(ch)) ? c : null;
+}
+async function cloudKeys(code) {
+  const norm = normCode(code); if (!norm) throw new Error('bad code');
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(norm), 'HKDF', false, ['deriveBits', 'deriveKey']);
+  const p = info => ({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(), info: new TextEncoder().encode(info) });
+  const id = b64url(await crypto.subtle.deriveBits(p('gentle-taper id'), base, 256));
+  const key = await crypto.subtle.deriveKey(p('gentle-taper key'), base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  return { id, key };
+}
+async function encryptState(key) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(S)));
+  return JSON.stringify({ v: 1, iv: b64(iv), ct: b64(ct) });
+}
+async function decryptState(key, blob) {
+  const { iv, ct } = JSON.parse(blob);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+async function cloudBackupNow(manual) {
+  const c = getCloud();
+  if (!c || cloudBusy) return false;
+  if (!hasData()) { if (manual) toast('Nothing to back up yet'); return false; } // never overwrite a good copy with an empty one
+  cloudBusy = true;
+  try {
+    const { id, key } = await cloudKeys(c.code);
+    await pushPost('/backup/put', { id, blob: await encryptState(key) });
+    const c2 = getCloud() || c; c2.last = Date.now(); c2.lastDay = today(); setCloud(c2); cloudPending = false;
+    if (manual) toast('Backed up to the cloud 🌿');
+    if (ui.view === 'settings') render();
+    return true;
+  } catch (e) {
+    if (manual) toast(String(e.message).includes('429') ? 'Just backed up — try again in a moment' : String(e.message).includes('413') ? 'Your data is too large to back up' : 'Couldn’t reach the backup service — it will retry');
+    return false;
+  } finally { cloudBusy = false; }
+}
+function cloudDirty() { // after any change, back up shortly (at most every 30 minutes)
+  if (!getCloud()) return;
+  cloudPending = true; clearTimeout(cloudT);
+  cloudT = setTimeout(() => { const c = getCloud(); if (c && Date.now() - (c.last || 0) > 30 * 60 * 1000) cloudBackupNow(false); }, 90000);
+}
+function cloudDaily() { const c = getCloud(); if (c && c.lastDay !== today() && hasData()) cloudBackupNow(false); }
+async function cloudOn() {
+  setCloud({ code: newCode(), last: 0, lastDay: '' }); ui.showCode = true; render();
+  await cloudBackupNow(true);
+}
+async function cloudOff() {
+  const c = getCloud();
+  try { if (c) await pushPost('/backup/delete', { id: (await cloudKeys(c.code)).id }); } catch (e) { toast('Couldn’t reach the service, but backups are now off here'); }
+  try { localStorage.removeItem(CLOUD_KEY); } catch (e) { /* ignore */ }
+  ui.showCode = false; render(); toast('Cloud backup turned off');
+}
+async function cloudRestore(gen) {
+  const typed = document.getElementById('cloudCodeIn'), code = (typed && typed.value.trim()) || (getCloud() || {}).code;
+  if (!normCode(code)) return toast('That recovery code doesn’t look right — it has 25 letters and numbers');
+  let data;
+  try {
+    const { id, key } = await cloudKeys(code);
+    const r = await pushPost('/backup/get', { id, gen });
+    data = await decryptState(key, r.blob);
+    if (!data || typeof data !== 'object' || !('logs' in data)) throw new Error('bad');
+  } catch (e) {
+    return toast(String(e.message).includes('404') ? (gen ? 'No older copy yet' : 'No backup found for that code') : String(e.message).includes('bad') || e.name === 'OperationError' ? 'Couldn’t open that backup with this code' : 'Couldn’t reach the backup service');
+  }
+  if (!confirm('Replace everything in the app with this cloud copy? Your current data is saved as a safety copy first.')) return;
+  pushBackup('Before cloud restore');
+  S = normalize(data); migrate();
+  S.settings.remind = false; S.settings.push = false; S.settings.pushSynced = ''; // this device needs its own reminder setup
+  save(); applyTheme(); ui.date = today(); ui.followToday = true;
+  setCloud({ code: normCode(code).replace(/(.{5})(?=.)/g, '$1-'), last: Date.now(), lastDay: today() });
+  syncPushDaily(); render(); toast('Restored from the cloud 🌿');
+}
+function cloudCard() {
+  const c = getCloud();
+  const note = '<p class="muted" style="margin-top:-4px">Your data is encrypted on your phone with a recovery code only you hold, then stored in the cloud. Nobody else — including me — can read it. If you lose both your phone and the code, the backup can’t be opened.</p>';
+  if (!c) return `<div class="card"><h2>Cloud backup</h2>${note}
+      <div class="btns"><button class="btn rose" data-act="cloudon">Turn on cloud backup</button></div>
+      <h3>On a new phone?</h3>
+      <label class="f" for="cloudCodeIn">Enter your recovery code</label>
+      <input id="cloudCodeIn" type="text" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX">
+      <div class="btns"><button class="btn ghost" data-act="cloudrestore" data-gen="0">Restore from cloud</button></div></div>`;
+  const when = c.last ? new Date(c.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'not yet';
+  return `<div class="card"><div class="row"><h2 style="margin:0">Cloud backup</h2><span class="pill sage">On</span></div>${note.replace('margin-top:-4px', 'margin-top:8px')}
+      <p class="muted">Last backed up: ${when}. It also backs up by itself as you log.</p>
+      ${ui.showCode ? `<div class="codebox"><div class="code">${esc(c.code)}</div>
+        <p class="muted" style="margin:6px 0 0">Save this in your password manager or notes. It’s the only way to restore on a new phone.</p>
+        <div class="btns"><button class="btn ghost" data-act="copycode">Copy</button><button class="btn ghost" data-act="cloudcode">Hide</button></div></div>` : ''}
+      <div class="btns"><button class="btn" data-act="cloudnow">Back up now</button>${ui.showCode ? '' : '<button class="btn ghost" data-act="cloudcode">Show recovery code</button>'}</div>
+      <h3>Restore from the cloud</h3>
+      <div class="btns"><button class="btn ghost" data-act="cloudrestore" data-gen="0">Latest</button><button class="btn ghost" data-act="cloudrestore" data-gen="1">Previous</button><button class="btn ghost" data-act="cloudrestore" data-gen="2">Older</button></div>
+      <div class="btns"><button class="btn danger" data-act="cloudoff">Turn off &amp; delete cloud copy</button></div></div>`;
 }
 
 /* ---------- reminders ---------- */
@@ -898,7 +1033,7 @@ function checkReminder() {
   const now = new Date(), [h, m] = st.time.split(':').map(Number);
   if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return;
   st.lastNotified = t; save();
-  if (S.logs[t] && S.sym[t] && S.sym[t].done) return; // already checked in
+  if (S.logs[t] || (S.sym[t] && S.sym[t].done)) return; // already logged something today
   notify('Gentle Taper', 'Time to log your drinks and how you’re feeling 🌿');
 }
 // Chrome-only experimental API; harmless no-op elsewhere.
@@ -958,7 +1093,7 @@ pushBackup();
 if (!S.plan && !S.baseline) ui.view = 'plan';
 handleLaunchParams();
 render();
-checkReminder(); scheduleTrigger(); syncPushDaily();
+checkReminder(); scheduleTrigger(); syncPushDaily(); setTimeout(cloudDaily, 4000);
 // Home-screen shortcuts open the app with ?quick=<drink>; log one and tidy the URL.
 function handleLaunchParams() {
   const quick = new URLSearchParams(location.search).get('quick');
@@ -973,7 +1108,8 @@ function handleLaunchParams() {
 function rollover() { pushBackup(); if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
 setInterval(() => { checkReminder(); rollover(); }, 30000);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { rollover(); checkReminder(); syncPushDaily(); }
+  if (document.visibilityState === 'visible') { rollover(); checkReminder(); syncPushDaily(); cloudDaily(); }
+  else if (cloudPending) { const c = getCloud(); if (c && Date.now() - (c.last || 0) > 5 * 60 * 1000) cloudBackupNow(false); }
 });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is optional */ });
