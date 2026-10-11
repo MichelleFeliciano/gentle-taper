@@ -67,7 +67,7 @@ function migrate() {
 migrate();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save on this device'); }
-  cloudDirty();
+  try { cloudDirty(); } catch (e) { /* the cloud hook must never break saving */ }
 }
 
 /* ---------- dates ---------- */
@@ -299,14 +299,21 @@ function pushBackup(label) {
   } catch (e) { /* storage full: skip */ }
 }
 
+function entryKey(L, p) {
+  const keys = Object.keys(L.drinks || {}), mine = k => k === p.id || k.startsWith(p.id + '~');
+  const hit = keys.find(k => mine(k) && L.drinks[k].mg === p.mg);
+  return hit || (keys.some(mine) ? `${p.id}~${p.mg}` : p.id);
+}
 function setDrink(d, p, delta) {
-  if (delta < 0 && !S.logs[d]?.drinks?.[p.id]) return;
   const L = Object.assign({ caf: 0, decaf: 0 }, S.logs[d]); const dr = Object.assign({}, L.drinks);
-  const cur = dr[p.id] || { n: 0, mg: p.mg, name: p.name };
+  const key = entryKey(L, p);
+  if (delta < 0 && !dr[key]) return null;
+  const cur = dr[key] || { n: 0 };
   const n = clamp(cur.n + delta, 0, 99);
-  if (n) dr[p.id] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name, type: p.type || '', container: p.container || '' }; else delete dr[p.id];
+  if (n) dr[key] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name, type: p.type || '', container: p.container || '' }; else delete dr[key];
   setLog(d, { drinks: dr });
-  if (delta < 0) unstamp(d, p.id, !n);
+  if (delta < 0) unstamp(d, key, !n);
+  return key;
 }
 function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); if (d === today()) pushTouch(); }
 function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(); }
@@ -417,7 +424,7 @@ function lastCafRow(d) {
   if (totalMg(d) === 0) return '';
   const lc = S.logs[d]?.lastCaf || '', cut = S.settings.cutoff;
   const note = lc ? (lc <= cut ? `Before your ${fmtTime(cut)} cutoff 🌿` : `After your ${fmtTime(cut)} cutoff — an earlier last cup can help sleep.`) : 'Add a time to track your cutoff streak.';
-  return `<div class="lastcaf"><div class="row"><label for="lastCaf" style="font-weight:600">Last caffeine at</label><input id="lastCaf" type="time" value="${lc}" style="width:auto"></div><p class="muted" style="margin:4px 0 0">${note}</p></div>`;
+  return `<div class="lastcaf"><div class="row"><label for="lastCaf" style="font-weight:600">Last caffeine at</label><input id="lastCaf" type="time" value="${esc(lc)}" style="width:auto"></div><p class="muted" style="margin:4px 0 0">${note}</p></div>`;
 }
 
 const isFav = p => p.fav !== false;
@@ -699,9 +706,10 @@ document.addEventListener('click', e => {
     case 'prev': ui.date = addDays(d, -1); ui.followToday = false; break;
     case 'next': if (d < today()) { ui.date = addDays(d, 1); ui.followToday = ui.date === today(); } break;
     case 'dr+': case 'dr-': {
-      const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id];
-      const pr = S.settings.presets.find(x => x.id === id) || (ent ? { ...ent, id } : null);
-      if (pr) { setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && (ent ? ent.mg : pr.mg) > 0) stamp(d, pr.id); if (el.dataset.quick) toast(`Logged ${pr.name}`); }
+      const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id], quick = !!el.dataset.quick;
+      // From the log, adjust that exact entry (its own caffeine amount); from the drinks list, log at the drink's current amount.
+      const pr = (!quick && ent) ? { ...ent, id } : (S.settings.presets.find(x => x.id === id) || (ent ? { ...ent, id } : null));
+      if (pr) { const key = setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && key && pr.mg > 0) stamp(d, key); if (quick) toast(`Logged ${pr.name}`); }
       break;
     }
     case 'wat+': S.water[d] = Math.min((S.water[d] || 0) + 1, 30); save(); break;
@@ -726,7 +734,7 @@ document.addEventListener('click', e => {
     case 'snooze': S.pace.snooze = addDays(today(), 2); save(); break;
     case 'nudgelater': S.settings.nudgeSnooze = addDays(today(), 3); save(); break;
     case 'delday':
-      if (confirm('Remove all drinks logged for this day? Your symptoms for the day stay.')) { delete S.logs[d]; delete S.water[d]; save(); } else return;
+      if (confirm('Remove all drinks logged for this day? Your symptoms and water tally for the day stay.')) { delete S.logs[d]; save(); } else return;
       break;
     case 'restore': {
       const e = readBackups().find(x => x.ts === +el.dataset.ts);
@@ -798,7 +806,7 @@ document.addEventListener('click', e => {
       const oz = parseFloat(document.getElementById('nd-oz').value);
       const pr = { id: 'p' + Date.now().toString(36), name, type: document.getElementById('nd-type').value, container: document.getElementById('nd-cont').value,
         oz: oz > 0 ? oz : null, mg: clamp(parseInt(document.getElementById('nd-mg').value, 10) || 0, 0, 1000), fav: document.getElementById('nd-fav').checked };
-      S.settings.presets.push(pr); setDrink(d, pr, 1); if (pr.mg > 0) stamp(d, pr.id); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
+      S.settings.presets.push(pr); const key = setDrink(d, pr, 1); if (pr.mg > 0) stamp(d, key); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
     }
     case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
     case 'delpreset': {
@@ -948,8 +956,8 @@ async function syncPushDaily(force) {
 /* ---------- encrypted cloud backup ---------- */
 // Everything is encrypted on this device with a key derived from a recovery code that never leaves it.
 // The service stores only ciphertext under an ID derived from the same code, so it can't read anything.
-const getCloud = () => { try { return JSON.parse(localStorage.getItem(CLOUD_KEY)); } catch (e) { return null; } };
-const setCloud = c => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ } };
+function getCloud() { try { return JSON.parse(localStorage.getItem(CLOUD_KEY)); } catch (e) { return null; } }
+function setCloud(c) { try { localStorage.setItem(CLOUD_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ } }
 const CROCK = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const hasData = () => Object.keys(S.logs).length > 0 || !!S.plan || !!S.baseline;
 const b64 = buf => { const u = new Uint8Array(buf); let out = ''; for (let i = 0; i < u.length; i += 0x8000) out += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(out); };
@@ -992,7 +1000,7 @@ async function cloudBackupNow(manual) {
     await pushPost('/backup/put', { id, blob: await encryptState(key) });
     const c2 = getCloud() || c; c2.last = Date.now(); c2.lastDay = today(); setCloud(c2); cloudPending = false;
     if (manual) toast('Backed up to the cloud 🌿');
-    if (ui.view === 'settings') render();
+    if (manual && ui.view === 'settings') render();
     return true;
   } catch (e) {
     if (manual) toast(String(e.message).includes('429') ? 'Just backed up — try again in a moment' : String(e.message).includes('413') ? 'Your data is too large to back up' : 'Couldn’t reach the backup service — it will retry');
@@ -1151,7 +1159,7 @@ function handleLaunchParams() {
   const d = today();
   const pr = S.settings.presets.find(x => x.id === (quick === 'cans' ? 'can' : quick)); // 'cans' = old shortcut name
   if (!pr) return;
-  setDrink(d, pr, 1); if (pr.mg > 0) stamp(d, pr.id); toast(`Logged ${pr.name}`);
+  const key = setDrink(d, pr, 1); if (pr.mg > 0) stamp(d, key); toast(`Logged ${pr.name}`);
   ui.date = d; ui.followToday = true; if (S.plan || S.baseline) ui.view = 'today';
 }
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
