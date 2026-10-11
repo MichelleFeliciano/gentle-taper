@@ -10,6 +10,9 @@ const SEV = ['None', 'Mild', 'Moderate', 'Strong'];
 const TYPES = ['Soda', 'Coffee', 'Tea', 'Energy drink', 'Sparkling water', 'Other'];
 const TYPE_MG = { 'Soda': 40, 'Coffee': 95, 'Tea': 47, 'Energy drink': 80, 'Sparkling water': 0, 'Other': 0 };
 const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Shot', 'Glass'];
+// Push reminders: a small Cloudflare Worker (see /worker) sends a silent push at your reminder time.
+const PUSH_URL = 'https://gentle-taper-push.michellefeliciano.workers.dev';
+const PUSH_KEY = 'BPHoUIzOrOvN_ZCYwSIz0MtfsQOAU7RaiAPcQBT4KvjTNUony1ux9FJ4oqvqM7JTqxvF-jakowvk4C1Eg-61KXw';
 const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function defaults() {
@@ -592,7 +595,7 @@ function vSettings() {
       <div class="switch"><label for="remOn">Remind me to log</label><input id="remOn" type="checkbox" ${st.remind ? 'checked' : ''}></div>
       <label class="f" for="remTime">Reminder time</label>
       <input id="remTime" type="time" value="${st.time}">
-      <p class="muted" style="margin-top:10px">${!supported ? 'This browser doesn’t support notifications.' : perm === 'denied' ? 'Notifications are blocked for this site — enable them in your browser settings.' : 'On a phone, add the app to your home screen first. Reminders fire when the app has been opened that day; for a guaranteed daily nudge, also add it to your calendar below.'}</p>
+      <p class="muted" style="margin-top:10px">${!supported ? 'This browser doesn’t support notifications.' : perm === 'denied' ? 'Notifications are blocked for this site — enable them in your browser settings.' : st.remind && st.push ? 'Push reminders are on: you’ll get a notification at this time even when the app is closed (skipped if you’ve already checked in).' : 'On a phone, add the app to your home screen first. ' + (pushSupported() ? 'Turn this on for reminders that arrive even when the app is closed.' : 'Reminders fire when the app has been opened that day; for a guaranteed daily nudge, also add it to your calendar below.')}</p>
       <div class="btns">
         <button class="btn ghost" data-act="testnotif">Send a test</button>
         <button class="btn ghost" data-act="ics">Add to calendar (.ics)</button>
@@ -695,7 +698,7 @@ document.addEventListener('click', e => {
       setLog(d, {});
       const ta = document.getElementById('notes');
       setSym(d, { done: true, notes: ta ? ta.value : (S.sym[d]?.notes || '') });
-      toast('Saved. Be gentle with yourself 🌿');
+      toast('Saved. Be gentle with yourself 🌿'); pushDone();
       break;
     }
     case 'range': ui.range = +el.dataset.v; break;
@@ -777,7 +780,12 @@ document.addEventListener('change', async e => {
     if (t.checked && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
     S.settings.remind = t.checked && 'Notification' in window && Notification.permission === 'granted';
     if (t.checked && !S.settings.remind) toast('Please allow notifications to turn this on');
-    S.settings.lastNotified = ''; save(); scheduleTrigger(); render();
+    S.settings.lastNotified = '';
+    if (S.settings.remind) {
+      S.settings.push = await enablePush();
+      if (pushSupported() && !S.settings.push) toast('Couldn’t reach the reminder service — using on-device reminders');
+    } else { await disablePush(); S.settings.push = false; }
+    save(); scheduleTrigger(); render();
   } else if (t.id === 'canMg') {
     S.settings.canMg = clamp(parseInt(t.value, 10) || 40, 1, 500); save(); toast('Saved');
   } else if (t.id === 'nd-type') {
@@ -799,7 +807,7 @@ document.addEventListener('change', async e => {
     const en = S.logs[ui.date]?.drinks?.[t.dataset.did];
     if (en) { if (t.dataset.f === 'mg') en.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); else en.name = t.value.trim() || en.name; save(); render(); }
   } else if (t.id === 'remTime') {
-    S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); toast('Reminder time saved');
+    S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); syncPushDaily(true); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
     try {
       const data = JSON.parse(await t.files[0].text());
@@ -808,6 +816,44 @@ document.addEventListener('change', async e => {
     } catch (err) { toast('That file doesn’t look like a backup'); }
   }
 });
+
+/* ---------- push reminders ---------- */
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && !PUSH_URL.includes('REPLACE');
+const keyBytes = b64 => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function pushPost(path, body) {
+  const r = await fetch(PUSH_URL + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(path + ' ' + r.status);
+  return r.json();
+}
+async function syncPush(sub) {
+  await pushPost('/subscribe', { subscription: sub.toJSON(), time: S.settings.time, tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  S.settings.pushSynced = today(); save();
+}
+async function enablePush() {
+  if (!pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(PUSH_KEY) });
+    await syncPush(sub); return true;
+  } catch (e) { return false; }
+}
+async function disablePush() {
+  try {
+    const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); await pushPost('/unsubscribe', { endpoint: ep }).catch(() => {}); }
+  } catch (e) { /* ignore */ }
+}
+async function pushDone() { // tell the server we've checked in today so it skips the reminder
+  if (!S.settings.push || !pushSupported()) return;
+  try { const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription(); if (sub) await pushPost('/done', { endpoint: sub.endpoint, date: today() }); } catch (e) { /* ignore */ }
+}
+async function syncPushDaily(force) { // re-register about once a day (keeps it alive, picks up a changed time zone)
+  if (!S.settings.push || !pushSupported() || (!force && S.settings.pushSynced === today())) return;
+  try {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) await syncPush(sub); else { S.settings.push = false; save(); }
+  } catch (e) { /* ignore */ }
+}
 
 /* ---------- reminders ---------- */
 function notify(title, body) {
@@ -820,11 +866,17 @@ async function testNotif() {
   if (!('Notification' in window)) return toast('Notifications aren’t supported here');
   if (Notification.permission === 'default') await Notification.requestPermission();
   if (Notification.permission !== 'granted') return toast('Notifications are blocked');
+  if (S.settings.push && pushSupported()) {
+    try {
+      const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+      if (sub) { const r = await pushPost('/test', { endpoint: sub.endpoint }); return toast(r.ok ? 'Test push sent — it should arrive in a moment' : `The push service replied ${r.status}`); }
+    } catch (e) { toast(String(e.message).includes('429') ? 'One test a minute, please' : 'Couldn’t send a test push — sending one from this device instead'); }
+  }
   notify('Gentle Taper', 'A soft little reminder to log your drinks and how you feel 🌿');
 }
 function checkReminder() {
   const st = S.settings;
-  if (!st.remind || !('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!st.remind || st.push || !('Notification' in window) || Notification.permission !== 'granted') return;
   const t = today();
   if (st.lastNotified === t) return;
   const now = new Date(), [h, m] = st.time.split(':').map(Number);
@@ -839,7 +891,7 @@ async function scheduleTrigger() {
     if (!('showTrigger' in Notification.prototype) || typeof TimestampTrigger === 'undefined') return;
     const reg = await navigator.serviceWorker.ready;
     (await reg.getNotifications({ tag: 'taper-scheduled', includeTriggered: false })).forEach(n => n.close());
-    if (!S.settings.remind || Notification.permission !== 'granted') return;
+    if (!S.settings.remind || S.settings.push || Notification.permission !== 'granted') return;
     const [h, m] = S.settings.time.split(':').map(Number);
     for (let k = 0; k < 7; k++) {
       const at = new Date(); at.setDate(at.getDate() + k); at.setHours(h, m, 0, 0);
@@ -890,7 +942,7 @@ pushBackup();
 if (!S.plan && !S.baseline) ui.view = 'plan';
 handleLaunchParams();
 render();
-checkReminder(); scheduleTrigger();
+checkReminder(); scheduleTrigger(); syncPushDaily();
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
 function handleLaunchParams() {
   const quick = new URLSearchParams(location.search).get('quick');
@@ -904,7 +956,7 @@ function handleLaunchParams() {
 function rollover() { pushBackup(); if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
 setInterval(() => { checkReminder(); rollover(); }, 30000);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { rollover(); checkReminder(); }
+  if (document.visibilityState === 'visible') { rollover(); checkReminder(); syncPushDaily(); }
 });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is optional */ });

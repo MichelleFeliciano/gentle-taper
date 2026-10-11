@@ -1,0 +1,17 @@
+name = "gentle-taper-push"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+preview_urls = false
+
+# Every 5 minutes: send reminders that are due (KV list calls stay within the free daily limit).
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+VAPID_PUBLIC = "BPHoUIzOrOvN_ZCYwSIz0MtfsQOAU7RaiAPcQBT4KvjTNUony1ux9FJ4oqvqM7JTqxvF-jakowvk4C1Eg-61KXw"
+VAPID_SUBJECT = "https://michellefeliciano.github.io/gentle-taper/"
+
+# KV namespace id is filled in by `wrangler kv namespace create SUBS` (see worker/README.md).
+[[kv_namespaces]]
+binding = "SUBS"
+id = "24cc8fe1e80641b9be34e880da4ac64d"

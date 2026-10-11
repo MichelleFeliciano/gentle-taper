@@ -1,4 +1,4 @@
-const CACHE = 'gentle-taper-v8';
+const CACHE = 'gentle-taper-v9';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -37,4 +37,12 @@ self.addEventListener('notificationclick', e => {
       return self.clients.openWindow('./');
     })
   );
+});
+
+// Silent push from the reminder service: show a fixed, friendly notification.
+self.addEventListener('push', e => {
+  e.waitUntil(self.registration.showNotification('Gentle Taper', {
+    body: 'Time to log your drinks and how you’re feeling 🌿',
+    icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'taper-daily',
+  }));
 });
