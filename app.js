@@ -427,12 +427,12 @@ function drinkEditor(p, idx, n) {
 }
 function drinkRow(p, dr) {
   const all = S.settings.presets, editing = ui.editId === p.id;
-  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>${esc(p.name)}<button class="edit" data-act="editdrink" data-id="${esc(p.id)}" aria-pressed="${editing}" aria-label="Edit ${esc(p.name)}">✎</button></span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`, p.name)}</div>${editing ? `<div class="editwrap">${drinkEditor(p, all.indexOf(p), all.length)}<div class="btns"><button class="btn" data-act="editdone">Done</button></div></div>` : ''}`;
+  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>${esc(p.name)}<button class="edit" data-act="editdrink" data-id="${esc(p.id)}" aria-pressed="${editing}" aria-label="Edit ${esc(p.name)}">✎</button></span><small>${esc(drinkLine(p))}</small></div><div class="stepper"><button class="round plus" data-act="dr+" data-id="${esc(p.id)}" data-quick="1" aria-label="Log one ${esc(p.name)}">+</button></div></div>${editing ? `<div class="editwrap">${drinkEditor(p, all.indexOf(p), all.length)}<div class="btns"><button class="btn" data-act="editdone">Done</button></div></div>` : ''}`;
 }
 function drinksCard(d, t) {
   const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets, mg = totalMg(d);
   const favs = P.filter(isFav), others = P.filter(p => !isFav(p));
-  const open = ui.moreOpen || others.some(p => dr[p.id] || p.id === ui.editId);
+  const open = ui.moreOpen || others.some(p => p.id === ui.editId);
   const dft = ui.draft || {};
   const form = ui.newOpen ? `<div class="newdrink">
       <label class="f" for="nd-name">What is it?</label>
@@ -445,7 +445,7 @@ function drinksCard(d, t) {
       <div class="btns"><button class="btn rose" data-act="savedrink">Save &amp; log one</button><button class="btn ghost" data-act="newdrink">Cancel</button></div>
     </div>` : '';
   return `<div class="card"><h2>Drinks</h2>
-      <p class="muted" style="margin-top:-4px">Tap ★ to pin a favorite or ✎ to edit a drink. Each counts toward your target by its caffeine amount.</p>
+      <p class="muted" style="margin-top:-4px">Tap + to log a drink, ★ to pin a favorite, or ✎ to edit it. Your counts show below in “Logged this day”.</p>
       ${favs.length ? favs.map(p => drinkRow(p, dr)).join('') : '<p class="muted">No favorites yet — star a drink below or add a new one.</p>'}
       ${others.length ? `<details class="more" ${open ? 'open' : ''}><summary>More drinks (${others.length})</summary>${others.map(p => drinkRow(p, dr)).join('')}</details>` : ''}
       ${ui.newOpen ? form : '<div class="btns"><button class="btn ghost" data-act="newdrink">+ New drink</button></div>'}
@@ -686,7 +686,7 @@ document.addEventListener('click', e => {
     case 'dr+': case 'dr-': {
       const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id];
       const pr = S.settings.presets.find(x => x.id === id) || (ent ? { ...ent, id } : null);
-      if (pr) { setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && (ent ? ent.mg : pr.mg) > 0) stamp(d); }
+      if (pr) { setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && (ent ? ent.mg : pr.mg) > 0) stamp(d); if (el.dataset.quick) toast(`Logged ${pr.name}`); }
       break;
     }
     case 'wat+': S.water[d] = Math.min((S.water[d] || 0) + 1, 30); save(); break;
