@@ -116,6 +116,6 @@ async function handle(req, env) {
 }
 
 export default {
-  fetch: (req, env) => handle(req, env).catch(e => json({ error: 'server error' }, 500)),
+  fetch: (req, env) => handle(req, env).catch(() => { const o = req.headers.get('Origin'); return json({ error: 'server error' }, 500, ORIGINS.includes(o) ? o : undefined); }),
   scheduled: (event, env, ctx) => ctx.waitUntil(runCron(env, new Date(event.scheduledTime))),
 };

@@ -68,16 +68,20 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function gen(from, n) {
   return Array.from({ length: n }, (_, i) => (n === 1 ? 0 : Math.round(from * (1 - i / (n - 1)) / 5) * 5));
 }
-function baselineDays() { const b = S.baseline; return b ? Object.keys(S.logs).filter(d => d >= b.start && d <= today()).sort() : []; }
+// Days logged since the baseline began. `inclToday` counts today's in-progress day (for display only).
+function baselineDays(inclToday = true) {
+  const b = S.baseline, t = today();
+  return b ? Object.keys(S.logs).filter(d => d >= b.start && (inclToday ? d <= t : d < t)).sort() : [];
+}
 function checkBaseline() {
   const b = S.baseline; if (!b || S.plan) return;
-  const days = baselineDays().slice(0, 3); if (days.length < 3) return;
+  const days = baselineDays(false).slice(0, 3); if (days.length < 3) return; // only finished days count
   const mgStart = Math.round(avg(days.map(totalMg)) / 5) * 5;
   S.baseline = null;
   if (mgStart < 10) { save(); toast('You’re already near zero — nothing to taper! 🌿'); return; }
-  const start = days[2] < today() ? today() : addDays(today(), 1);
+  const start = today();
   S.plan = { start, targets: gen(mgStart, b.taperDays), pausedAt: null, fromBaseline: true };
-  save(); toast(`Baseline done: about ${mgStart} mg a day. Your taper ${start === today() ? 'starts today' : 'starts tomorrow'}.`);
+  save(); toast(`Baseline done: about ${mgStart} mg a day. Your taper starts today.`);
 }
 function planIdx(date) {
   const p = S.plan; if (!p || date < p.start) return null;
@@ -146,10 +150,10 @@ function stamp(d) {
   if (d !== today() || !S.logs[d]) return;
   const n = new Date(); S.logs[d].lastCaf = `${pad(n.getHours())}:${pad(n.getMinutes())}`; save();
 }
-function streakOf(ok) {
+function streakOf(ok, completeOnly) {
   let n = 0;
   for (let d = today(); n < 800; d = addDays(d, -1)) {
-    if (d === today() && !S.logs[d]) continue;
+    if (d === today() && (completeOnly || !S.logs[d])) continue;
     if (S.logs[d] && ok(d)) n++; else break;
   }
   return n;
@@ -162,14 +166,14 @@ const MILESTONES = [['s7', '7 days on target', 'A whole week on target — that�
   ['zero', 'First caffeine-free day', 'Your first caffeine-free day. 🌸']];
 function checkMilestones() {
   if (!S.plan) return;
-  const t = today(), st = streakNow();
+  const t = today(), st = streakOf(d => target(d) != null && totalMg(d) <= target(d), true);
   const set = (k, v) => { if (!S.ms[k]) { S.ms[k] = v; save(); toast(MILESTONES.find(m => m[0] === k)[2]); } };
   if (st >= 7) set('s7', t);
   if (st >= 14) set('s14', t);
   const pl = S.plan;
   if (!pl.completedOn && !pl.pausedAt && pl.start <= t && planIdx(t) >= pl.targets.length - 1) { pl.completedOn = t; save(); toast('You reached the final day of your taper! 🌸'); }
   if (!S.ms.zero) {
-    const z = Object.keys(S.logs).filter(d => d >= S.plan.start && d <= t && totalMg(d) === 0).sort()[0];
+    const z = Object.keys(S.logs).filter(d => d >= S.plan.start && d < t && totalMg(d) === 0).sort()[0];
     if (z) set('zero', z);
   }
 }
@@ -249,14 +253,17 @@ function paceAlert() {
 /* ---------- automatic safety copies ---------- */
 const BK = 'gentle-taper-backups';
 function readBackups() { try { return JSON.parse(localStorage.getItem(BK)) || []; } catch (e) { return []; } }
+let backedUpOn = '';
 function pushBackup(label) {
   if (!Object.keys(S.logs).length && !S.plan) return;
+  if (!label && backedUpOn === today()) return;
   try {
     let b = readBackups();
-    if (!label && b.some(x => x.date === today() && !x.label)) return;
+    if (!label && b.some(x => x.date === today() && !x.label)) { backedUpOn = today(); return; }
     b.push({ date: today(), label: label || '', ts: Date.now(), json: JSON.stringify(S) });
     b = [...b.filter(x => !x.label).slice(-7), ...b.filter(x => x.label).slice(-5)].sort((x, y) => x.ts - y.ts);
     localStorage.setItem(BK, JSON.stringify(b));
+    if (!label) backedUpOn = today();
   } catch (e) { /* storage full: skip */ }
 }
 
@@ -305,7 +312,7 @@ function vToday() {
   if (t == null) {
     hero = `<div class="card hero"><div class="lbl">No target set for this day</div>
       <div class="status">${S.plan ? (isToday && S.plan.start > today() ? `Baseline complete! Your taper starts tomorrow at ${S.plan.targets[0]} mg.` : 'This is before your taper began.')
-        : S.baseline ? 'Learning your habit: log everything you normally have — no target yet.' : 'Set up a taper in the Plan tab to see daily targets.'}</div></div>`;
+        : S.baseline ? (baselineDays().length >= 3 && baselineDays(false).length < 3 ? 'Baseline logged! Your taper will be built from your average tomorrow morning.' : 'Learning your habit: log everything you normally have — no target yet.') : 'Set up a taper in the Plan tab to see daily targets.'}</div></div>`;
   } else {
     const logged = !!L;
     let msg = '';
@@ -686,7 +693,8 @@ document.addEventListener('click', e => {
     case 'restore': {
       const e = readBackups().find(x => x.ts === +el.dataset.ts);
       if (e && confirm('Replace everything in the app with this safety copy? Your current data is saved as a safety copy first.')) {
-        pushBackup('Before restore'); S = normalize(JSON.parse(e.json)); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; toast('Restored');
+        let restored; try { restored = normalize(JSON.parse(e.json)); } catch (err) { toast('That safety copy is damaged'); return; }
+        pushBackup('Before restore'); S = restored; migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; syncPushDaily(); toast('Restored');
       } else return;
       break;
     }
@@ -698,7 +706,7 @@ document.addEventListener('click', e => {
       setLog(d, {});
       const ta = document.getElementById('notes');
       setSym(d, { done: true, notes: ta ? ta.value : (S.sym[d]?.notes || '') });
-      toast('Saved. Be gentle with yourself 🌿'); pushDone();
+      toast('Saved. Be gentle with yourself 🌿'); if (d === today()) pushDone();
       break;
     }
     case 'range': ui.range = +el.dataset.v; break;
@@ -764,7 +772,7 @@ document.addEventListener('click', e => {
     case 'import': document.getElementById('importFile').click(); return;
     case 'wipe':
       if (confirm('Erase all plans, logs and symptoms from this device? A safety copy is kept under Backups so you can undo it.')) {
-        pushBackup('Before erase'); S = defaults(); save(); applyTheme(); ui.view = 'plan'; ui.date = today(); ui.followToday = true;
+        pushBackup('Before erase'); S = defaults(); save(); applyTheme(); ui.view = 'plan'; ui.date = today(); ui.followToday = true; syncPushDaily();
       } else return;
       break;
   }
@@ -812,12 +820,14 @@ document.addEventListener('change', async e => {
     try {
       const data = JSON.parse(await t.files[0].text());
       if (!data || typeof data !== 'object' || !('logs' in data)) throw new Error('bad');
-      pushBackup('Before import'); S = normalize(data); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; render(); toast('Backup restored');
+      pushBackup('Before import'); S = normalize(data); migrate(); save(); applyTheme(); ui.date = today(); ui.followToday = true; syncPushDaily(); render(); toast('Backup restored');
     } catch (err) { toast('That file doesn’t look like a backup'); }
+    t.value = ''; // so choosing the same file again still works
   }
 });
 
 /* ---------- push reminders ---------- */
+const swReady = () => Promise.race([navigator.serviceWorker.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('no service worker')), 5000))]);
 const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && !PUSH_URL.includes('REPLACE');
 const keyBytes = b64 => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 async function pushPost(path, body) {
@@ -829,38 +839,44 @@ async function syncPush(sub) {
   await pushPost('/subscribe', { subscription: sub.toJSON(), time: S.settings.time, tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
   S.settings.pushSynced = today(); save();
 }
+let pushBusy = false;
 async function enablePush() {
   if (!pushSupported()) return false;
+  pushBusy = true;
   try {
-    const reg = await navigator.serviceWorker.ready;
+    const reg = await swReady();
     const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(PUSH_KEY) });
     await syncPush(sub); return true;
-  } catch (e) { return false; }
+  } catch (e) { return false; } finally { pushBusy = false; }
 }
 async function disablePush() {
+  pushBusy = true;
   try {
-    const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    const sub = await (await swReady()).pushManager.getSubscription();
     if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); await pushPost('/unsubscribe', { endpoint: ep }).catch(() => {}); }
-  } catch (e) { /* ignore */ }
+  } catch (e) { /* ignore */ } finally { pushBusy = false; }
 }
 async function pushDone() { // tell the server we've checked in today so it skips the reminder
   if (!S.settings.push || !pushSupported()) return;
-  try { const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription(); if (sub) await pushPost('/done', { endpoint: sub.endpoint, date: today() }); } catch (e) { /* ignore */ }
+  try { const sub = await (await swReady()).pushManager.getSubscription(); if (sub) await pushPost('/done', { endpoint: sub.endpoint, date: today() }); } catch (e) { /* ignore */ }
 }
-async function syncPushDaily(force) { // re-register about once a day (keeps it alive, picks up a changed time zone)
-  if (!S.settings.push || !pushSupported() || (!force && S.settings.pushSynced === today())) return;
+// Keeps the server in step with this device: re-registers about once a day (stays alive, follows time-zone changes),
+// and removes a leftover subscription if reminders are off (e.g. after Erase, Restore or Import).
+async function syncPushDaily(force) {
+  if (!pushSupported() || pushBusy) return;
   try {
-    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
-    if (sub) await syncPush(sub); else { S.settings.push = false; save(); }
+    const sub = await (await swReady()).pushManager.getSubscription();
+    if (!sub) { if (S.settings.push) { S.settings.push = false; save(); } return; }
+    if (!(S.settings.remind && S.settings.push)) { await disablePush(); return; }
+    if (force || S.settings.pushSynced !== today()) await syncPush(sub);
   } catch (e) { /* ignore */ }
 }
 
 /* ---------- reminders ---------- */
 function notify(title, body) {
   const opts = { body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'taper-daily' };
-  if (navigator.serviceWorker && navigator.serviceWorker.ready) {
-    navigator.serviceWorker.ready.then(r => r.showNotification(title, opts)).catch(() => { try { new Notification(title, opts); } catch (e) { /* ignore */ } });
-  } else { try { new Notification(title, opts); } catch (e) { /* ignore */ } }
+  const fallback = () => { try { new Notification(title, opts); } catch (e) { /* ignore */ } };
+  if ('serviceWorker' in navigator) swReady().then(r => r.showNotification(title, opts)).catch(fallback); else fallback();
 }
 async function testNotif() {
   if (!('Notification' in window)) return toast('Notifications aren’t supported here');
@@ -868,7 +884,7 @@ async function testNotif() {
   if (Notification.permission !== 'granted') return toast('Notifications are blocked');
   if (S.settings.push && pushSupported()) {
     try {
-      const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+      const sub = await (await swReady()).pushManager.getSubscription();
       if (sub) { const r = await pushPost('/test', { endpoint: sub.endpoint }); return toast(r.ok ? 'Test push sent — it should arrive in a moment' : `The push service replied ${r.status}`); }
     } catch (e) { toast(String(e.message).includes('429') ? 'One test a minute, please' : 'Couldn’t send a test push — sending one from this device instead'); }
   }
@@ -889,7 +905,7 @@ function checkReminder() {
 async function scheduleTrigger() {
   try {
     if (!('showTrigger' in Notification.prototype) || typeof TimestampTrigger === 'undefined') return;
-    const reg = await navigator.serviceWorker.ready;
+    const reg = await swReady();
     (await reg.getNotifications({ tag: 'taper-scheduled', includeTriggered: false })).forEach(n => n.close());
     if (!S.settings.remind || S.settings.push || Notification.permission !== 'granted') return;
     const [h, m] = S.settings.time.split(':').map(Number);
@@ -943,7 +959,7 @@ if (!S.plan && !S.baseline) ui.view = 'plan';
 handleLaunchParams();
 render();
 checkReminder(); scheduleTrigger(); syncPushDaily();
-// If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
+// Home-screen shortcuts open the app with ?quick=<drink>; log one and tidy the URL.
 function handleLaunchParams() {
   const quick = new URLSearchParams(location.search).get('quick');
   if (!quick) return;
@@ -953,6 +969,7 @@ function handleLaunchParams() {
   else { const pr = S.settings.presets.find(x => x.id === quick); if (!pr) return; setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); toast(`Logged ${pr.name}`); }
   ui.date = d; ui.followToday = true; if (S.plan || S.baseline) ui.view = 'today';
 }
+// If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
 function rollover() { pushBackup(); if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
 setInterval(() => { checkReminder(); rollover(); }, 30000);
 document.addEventListener('visibilitychange', () => {
