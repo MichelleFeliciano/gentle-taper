@@ -164,9 +164,23 @@ const n1 = v => String(Math.round(v * 10) / 10);
 function drinkMg(d) { const dr = S.logs[d]?.drinks || {}; return Object.values(dr).reduce((a, x) => a + x.n * x.mg, 0); }
 function totalMg(d) { const L = S.logs[d]; return L ? Math.round(L.caf * S.settings.canMg + drinkMg(d)) : 0; }
 const fmtTime = t => { const [h, m] = t.split(':').map(Number); return `${h % 12 || 12}:${pad(m)} ${h < 12 ? 'am' : 'pm'}`; };
-function stamp(d) {
+function hhmm(at) { const n = at || new Date(); return `${pad(n.getHours())}:${pad(n.getMinutes())}`; }
+function stamp(d, id, at) {
   if (d !== today() || !S.logs[d]) return;
-  const n = new Date(); S.logs[d].lastCaf = `${pad(n.getHours())}:${pad(n.getMinutes())}`; save();
+  const L = S.logs[d], t = at || hhmm();
+  L.adds = [...(L.adds || []), { id, t }]; L.lastCaf = t; save();
+}
+// After a drink is counted down: forget its newest time, then show the newest time still on the log.
+function unstamp(d, id, removedAll) {
+  const L = S.logs[d]; if (!L) return;
+  let adds = (L.adds || []).slice();
+  const i = adds.map(a => a.id).lastIndexOf(id);
+  if (i >= 0) adds.splice(i, 1);
+  if (removedAll) adds = adds.filter(a => a.id !== id);
+  L.adds = adds;
+  if (adds.length) L.lastCaf = adds[adds.length - 1].t;
+  else if (totalMg(d) === 0) L.lastCaf = null; // no caffeine left on the day
+  save();
 }
 function streakOf(ok, completeOnly) {
   let n = 0;
@@ -292,6 +306,7 @@ function setDrink(d, p, delta) {
   const n = clamp(cur.n + delta, 0, 99);
   if (n) dr[p.id] = { n, mg: cur.n === 0 ? p.mg : cur.mg, name: p.name, type: p.type || '', container: p.container || '' }; else delete dr[p.id];
   setLog(d, { drinks: dr });
+  if (delta < 0) unstamp(d, p.id, !n);
 }
 function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); if (d === today()) pushTouch(); }
 function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(); }
@@ -686,7 +701,7 @@ document.addEventListener('click', e => {
     case 'dr+': case 'dr-': {
       const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id];
       const pr = S.settings.presets.find(x => x.id === id) || (ent ? { ...ent, id } : null);
-      if (pr) { setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && (ent ? ent.mg : pr.mg) > 0) stamp(d); if (el.dataset.quick) toast(`Logged ${pr.name}`); }
+      if (pr) { setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && (ent ? ent.mg : pr.mg) > 0) stamp(d, pr.id); if (el.dataset.quick) toast(`Logged ${pr.name}`); }
       break;
     }
     case 'wat+': S.water[d] = Math.min((S.water[d] || 0) + 1, 30); save(); break;
@@ -783,7 +798,7 @@ document.addEventListener('click', e => {
       const oz = parseFloat(document.getElementById('nd-oz').value);
       const pr = { id: 'p' + Date.now().toString(36), name, type: document.getElementById('nd-type').value, container: document.getElementById('nd-cont').value,
         oz: oz > 0 ? oz : null, mg: clamp(parseInt(document.getElementById('nd-mg').value, 10) || 0, 0, 1000), fav: document.getElementById('nd-fav').checked };
-      S.settings.presets.push(pr); setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
+      S.settings.presets.push(pr); setDrink(d, pr, 1); if (pr.mg > 0) stamp(d, pr.id); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
     }
     case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
     case 'delpreset': {
@@ -857,7 +872,10 @@ document.addEventListener('change', async e => {
       save(); toast('Saved');
     }
   } else if (t.id === 'lastCaf') {
-    setLog(ui.date, { lastCaf: t.value || null }); render();
+    const L = S.logs[ui.date], v = t.value || null;
+    if (L && v && (L.adds || []).length) { const adds = L.adds.slice(); adds[adds.length - 1] = { ...adds[adds.length - 1], t: v }; setLog(ui.date, { lastCaf: v, adds }); }
+    else setLog(ui.date, { lastCaf: v });
+    render();
   } else if (t.id === 'cutoff') {
     S.settings.cutoff = t.value || '14:00'; save(); toast('Saved');
   } else if (t.id === 'remTime') {
@@ -1133,7 +1151,7 @@ function handleLaunchParams() {
   const d = today();
   const pr = S.settings.presets.find(x => x.id === (quick === 'cans' ? 'can' : quick)); // 'cans' = old shortcut name
   if (!pr) return;
-  setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); toast(`Logged ${pr.name}`);
+  setDrink(d, pr, 1); if (pr.mg > 0) stamp(d, pr.id); toast(`Logged ${pr.name}`);
   ui.date = d; ui.followToday = true; if (S.plan || S.baseline) ui.view = 'today';
 }
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
