@@ -29,15 +29,17 @@
   --bg1: #e2f0df; --bg2: #ebe5f5;
   --hero1: #e0f0e5; --hero2: #f1ecf8;
   --sage-bg: #e5eee2; --blush-bg: #e0f0e5; --lav-bg: #f1ecf8; --lav-bg2: #ecdff5; --lav-ink: #5f4a8a;
-  --warn-bg: #fbf0d6; --warn-bd: #e8cf8f; --warn-ink: #8a6d1f;
-  --pill-sage: #dfeadb; --tabbar: rgba(244, 249, 241, .94); --on-sage: #2f4a2c; --toast-bg: #6c8d68; --vine-op: .7;
-  --c-target: #c9a3d8; --c-caf: #6c8d68; --c-decaf: #d9a84f; --c-avg: #8f7bb8;
+  --warn-bg: #fbf0d6; --warn-bd: #e8cf8f; --warn-ink: #7a5d12;
+  --pill-sage: #dfeadb; --tabbar: rgba(244, 249, 241, .94); --on-sage: #2f4a2c; --toast-bg: #4f6f4a; --vine-op: .7;
+  --c-target: #c9a3d8; --c-caf: #6c8d68; --c-avg: #8f7bb8;
   --s0: #4fa58f; --s1: #6c8d68; --s2: #8f7bb8; --s3: #d9a84f; --s4: #5f9ea0; --s5: #c98a5e;
   --font-body: "Quicksand", ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, sans-serif;
   --font-head: "Fraunces", Georgia, serif;
   --mod-bg: #fbe6dc;
   --mod-bd: #e8a98f;
-  --mod-ink: #a5573a;
+  --mod-ink: #93482c;
+  --shadow: rgba(70, 110, 85, .30);   /* soft green card shadow */
+  --star: #ae7208;                    /* favorite star (darker gold so it's visible on light cards) */
 }
 
 /* Dark theme: same variable names, darker values. `color-scheme: dark` also darkens built-in form controls. */
@@ -49,11 +51,13 @@
   --sage-bg: #2b3d2c; --blush-bg: #26382d; --lav-bg: #2e2840; --lav-bg2: #3a2f52; --lav-ink: #d5c8f3;
   --warn-bg: #3d3420; --warn-bd: #8a7435; --warn-ink: #ecd48e;
   --pill-sage: #2b3d2c; --tabbar: rgba(21, 27, 23, .94); --on-sage: #12210f; --toast-bg: #4f6e4b; --vine-op: .5;
-  --c-target: #cdb4e6; --c-caf: #a9cfa3; --c-decaf: #e0b457; --c-avg: #bfaee6;
+  --c-target: #cdb4e6; --c-caf: #a9cfa3; --c-avg: #bfaee6;
   --s0: #7fcfb0; --s1: #a9cfa3; --s2: #bfaee6; --s3: #e0b457; --s4: #86c5c7; --s5: #d9a07a;
   --mod-bg: #40291f;
   --mod-bd: #9c6247;
   --mod-ink: #f0b79b;
+  --shadow: rgba(0, 0, 0, .45);
+  --star: #f0bd4f;
 }
 
 /* Base: predictable sizing, no tap flash, and the page background. */
@@ -69,6 +73,7 @@ body {
     radial-gradient(100% 50% at 100% 100%, var(--bg2) 0%, transparent 60%),
     var(--paper);
   min-height: 100vh;
+  min-height: 100dvh; /* excludes the phone browser's collapsing toolbar where supported */
   padding: env(safe-area-inset-top) 0 calc(78px + env(safe-area-inset-bottom));
   font-size: 1rem;
   line-height: 1.45;
@@ -94,7 +99,7 @@ header.top h1 { font-family: var(--font-head); font-weight: 600; font-size: 1.75
 header.top p { margin: 2px 0 0; color: var(--ink-soft); font-size: 0.875rem; min-height: 20px; }
 
 /* Main content column, kept above the vine borders (z-index) and narrow enough to feel like a phone screen on desktop. */
-main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding: 10px 28px 20px; }
+main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding: 10px max(28px, env(safe-area-inset-right)) 20px max(28px, env(safe-area-inset-left)); }
 
 /* Cards: the container for every section. Variants: .note (green prompt), .alert (lavender prompt), .hero (target). */
 .card {
@@ -103,7 +108,7 @@ main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding
   border-radius: var(--radius);
   padding: 16px 16px 18px;
   margin: 0 0 14px;
-  box-shadow: 0 6px 18px -12px rgba(150, 90, 110, .35);
+  box-shadow: 0 6px 18px -12px var(--shadow);
 }
 .card h2 { font-family: var(--font-head); font-weight: 500; font-size: 1.1875rem; margin: 0 0 10px; color: var(--ink); }
 .card h3 { font-size: 0.875rem; margin: 14px 0 6px; color: var(--ink-soft); font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
@@ -129,7 +134,7 @@ main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding
 .hero .lbl { color: var(--ink-soft); font-size: 0.875rem; }
 /* Short status line (e.g. "Under target"); .over shifts to lavender rather than a red warning, to keep the tone gentle. */
 .status { margin-top: 8px; font-weight: 600; color: var(--sage-deep); }
-.status.over { color: var(--lav-deep); }
+.status.over { color: var(--lav-ink); }
 
 /* steppers */
 .counter { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; }
@@ -174,7 +179,6 @@ label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--in
 .btn.danger { background: var(--cream); color: var(--rose-deep); border-color: var(--rose); }
 .btn.block { width: 100%; }
 .btn:active { transform: scale(.98); }
-.btn:disabled { opacity: .5; }
 /* Rows of buttons that wrap on narrow screens. */
 .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .btns .btn { flex: 1 1 140px; }
@@ -183,13 +187,13 @@ label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--in
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
 .chip {
   font-family: var(--font-body); font-size: 0.8125rem; font-weight: 600; padding: 7px 12px; border-radius: 999px;
-  border: 1.5px solid var(--line); background: var(--cream); color: var(--ink-soft); cursor: pointer; min-height: 34px;
+  border: 1.5px solid var(--line); background: var(--cream); color: var(--ink-soft); cursor: pointer; min-height: 40px;
 }
 .chip.on { background: var(--sage-bg); border-color: var(--sage); color: var(--sage-deep); }
 
 /* chart */
 .chart { width: 100%; height: auto; display: block; }
-.chart text { font-family: var(--font-body); font-size: 10px; fill: var(--ink-soft); }
+.chart text { font-family: var(--font-body); font-size: 10px; fill: var(--ink-soft); } /* px on purpose: SVG text scales with the chart, not the page */
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8125rem; color: var(--ink-soft); margin-top: 6px; }
 .legend i { display: inline-block; width: 16px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
 .legend i.dash { border-top-style: dashed; }
@@ -203,7 +207,7 @@ label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--in
 /* schedule list */
 .sched { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
 .sched + .sched { border-top: 1.5px dashed var(--line); }
-.sched.past { opacity: .55; }
+.sched.past { opacity: .7; }
 .sched.now { background: var(--blush-bg); margin: 0 -8px; padding: 6px 8px; border-radius: 14px; border-top-color: transparent; }
 .sched .stepper .round { width: 40px; height: 40px; font-size: 1.375rem; }
 .sched .stepper .n { font-size: 1.5rem; min-width: 28px; }
@@ -228,8 +232,8 @@ details.card[open] summary { margin-bottom: 8px; }
 /* Fixed bottom tab bar with a blurred background. */
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; justify-content: center; gap: 4px;
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
-  background: var(--tabbar); backdrop-filter: blur(8px);
+  padding: 8px max(12px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: var(--tabbar); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   border-top: 1.5px solid var(--line);
 }
 .tabs button {
@@ -248,34 +252,28 @@ details.card[open] summary { margin-bottom: 8px; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 /* Wider screens: slightly wider vines. */
-@media (min-width: 560px) { .vine { width: 60px; } }
+@media (min-width: 560px) { .vine { width: 60px; background-size: 60px 400px; } }
 /* Respect the "reduce motion" accessibility setting. */
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* Drinks card: the day's caffeine total versus target, and the drink-editor rows. */
 .totals { margin-top: 10px; padding: 10px 12px; background: var(--lav-bg); border-radius: 16px; text-align: center; }
-.totals b { font-family: var(--font-head); font-size: 1.375rem; color: var(--lav-deep); font-weight: 500; }
+.totals b { font-family: var(--font-head); font-size: 1.375rem; color: var(--lav-ink); font-weight: 500; }
 .preset { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .preset .pname { flex: 1; min-width: 0; }
 .preset .pmg { width: 74px; flex: none; }
-.preset .round { width: 40px; height: 40px; flex: none; color: var(--rose-deep); }
 
-/* Selects and free-text inputs (the number/time inputs are styled above). */
-select {
-  width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink);
-  border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 10px; min-height: 46px;
-}
+/* Free-text inputs (the number/time inputs are styled above). */
 input[type=text] {
   width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink);
   border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 12px;
 }
 /* Favorite star (.on = favorite) and the edit pencil. */
-.star { border: 0; background: none; font-size: 1.375rem; line-height: 1; color: var(--line); padding: 2px 8px 2px 0; cursor: pointer; min-height: 36px; vertical-align: middle; }
-.star.on { color: #e0a73c; }
+.star { border: 0; background: none; font-size: 1.375rem; line-height: 1; color: var(--ink-soft); opacity: .5; padding: 2px 8px 2px 0; cursor: pointer; min-height: 36px; vertical-align: middle; }
+.star.on { color: var(--star); opacity: 1; }
 /* Drink editor block (shown inline on Today and in Settings) and the new-drink form. */
 .dedit { padding: 8px 0; }
 .dedit + .dedit { border-top: 1.5px dashed var(--line); }
-.preset select { min-width: 0; flex: 1; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .newdrink { margin-top: 8px; padding: 4px 12px 12px; background: var(--lav-bg); border-radius: 18px; }
 /* "More drinks" collapsible inside the Drinks card. */
@@ -294,10 +292,8 @@ details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep)
 .lrow { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
 .lrow + .lrow { border-top: 1.5px dashed var(--line); }
 .lrow .lname { flex: 1 1 140px; min-width: 0; }
-.lrow .lname input { width: 100%; padding: 8px 10px; font-weight: 600; }
 .lrow .lname small { display: block; color: var(--ink-soft); font-size: 0.75rem; margin-top: 2px; }
-.lrow .pmg { width: 70px; flex: none; padding: 8px 8px; }
-.lrow .stepper .round, .lrow > .round { width: 40px; height: 40px; font-size: 1.25rem; flex: none; }
+.lrow .stepper .round { width: 40px; height: 40px; font-size: 1.25rem; flex: none; }
 .lrow .stepper .n { font-size: 1.375rem; min-width: 24px; }
 /* "Last caffeine at" row. */
 .lastcaf { border-top: 1.5px dashed var(--line); padding: 10px 0 2px; margin-top: 6px; }
@@ -306,14 +302,14 @@ details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep)
 .ms.done { color: var(--sage-deep); font-weight: 600; }
 
 /* Accessibility: a clear outline when navigating by keyboard or switch control. */
-:focus-visible { outline: 3px solid var(--lav-deep); outline-offset: 2px; border-radius: 10px; }
+:focus-visible { outline: 3px solid var(--lav-deep); outline-offset: 2px; }
 /* Weekly summary bullet list. */
 .wk { margin: 0; padding-left: 18px; }
 .wk li { margin: 4px 0; }
 
 /* Cloud-backup recovery code box (monospace, easy to select and copy). */
 .codebox { margin: 10px 0 4px; padding: 12px; border: 2px dashed var(--sage); border-radius: 18px; background: var(--sage-bg); }
-.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; font-weight: 700; letter-spacing: 0; white-space: nowrap; text-align: center; user-select: all; -webkit-user-select: all; }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; font-weight: 700; letter-spacing: 0; white-space: nowrap; overflow-x: auto; text-align: center; user-select: all; -webkit-user-select: all; }
 
 /* Edit pencil, drink-editor panel and the compact button size. */
 .edit { border: 0; background: none; font-size: 1.05rem; color: var(--ink-soft); padding: 2px 8px; cursor: pointer; min-height: 36px; }

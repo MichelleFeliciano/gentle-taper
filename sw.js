@@ -1,6 +1,6 @@
 // Service worker: (1) makes the app work offline by caching its files, (2) shows push notifications.
 // Bump the CACHE name whenever files change so old copies are replaced.
-const CACHE = 'gentle-taper-v17';
+const CACHE = 'gentle-taper-v18';
 // The "app shell": files cached when the worker installs. (Google Fonts are cached on first use below.)
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
