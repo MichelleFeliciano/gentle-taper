@@ -386,15 +386,14 @@ function alertCards() {
       <div class="btns"><button class="btn" data-act="export">Export now</button><button class="btn ghost" data-act="nudgelater">Later</button></div></div>`;
   return h;
 }
-// A simple log of the day: names are read-only; only the amounts (how many, and mg each) can be changed.
+// A simple log of the day. Everything is read-only except how many of each drink (counting down to 0 removes it).
 function loggedCard(d) {
   const L = S.logs[d]; if (!L) return '';
   const ent = Object.entries(L.drinks || {});
   if (!ent.length) return '';
   return `<div class="card"><h2>Logged this day</h2>
-    <p class="muted" style="margin-top:-4px">Change how many, or the caffeine in each. Counting down to 0 removes it.</p>
+    <p class="muted" style="margin-top:-4px">Change how many you had. Counting down to 0 removes it.</p>
     ${ent.map(([id, e]) => `<div class="lrow"><div class="lname"><b>${esc(e.name)}</b><small>${e.n} × ${e.mg} mg = ${e.n * e.mg} mg</small></div>
-      <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-did="${esc(id)}" data-f="mg" value="${e.mg}" aria-label="${esc(e.name)}: mg each"><span class="muted">mg</span>
       ${stepper('dr', e.n, '', `data-id="${esc(id)}"`, e.name)}</div>`).join('')}
     <div class="btns"><button class="btn danger" data-act="delday">Clear this day’s drinks</button></div></div>`;
 }
@@ -861,9 +860,6 @@ document.addEventListener('change', async e => {
     setLog(ui.date, { lastCaf: t.value || null }); render();
   } else if (t.id === 'cutoff') {
     S.settings.cutoff = t.value || '14:00'; save(); toast('Saved');
-  } else if (t.dataset.did) {
-    const en = S.logs[ui.date]?.drinks?.[t.dataset.did];
-    if (en && t.dataset.f === 'mg') { en.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); save(); render(); }
   } else if (t.id === 'remTime') {
     S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); syncPushDaily(true); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
