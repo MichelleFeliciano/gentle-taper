@@ -7,9 +7,10 @@ const SYMS = [
   ['nausea', 'Nausea'], ['focus', 'Trouble focusing'], ['mood', 'Low mood'],
 ];
 const SEV = ['None', 'Mild', 'Moderate', 'Strong'];
-const TYPES = ['Soda', 'Coffee', 'Tea', 'Energy drink', 'Sparkling water', 'Other'];
-const TYPE_MG = { 'Soda': 40, 'Coffee': 95, 'Tea': 47, 'Energy drink': 80, 'Sparkling water': 0, 'Other': 0 };
-const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Shot', 'Glass'];
+// Suggestions only: a drink's type and container can be any text.
+const TYPES = ['Soda', 'Coffee', 'Tea', 'Energy drink', 'Sparkling water', 'Pre-workout', 'Chocolate', 'Other'];
+const TYPE_MG = { 'Soda': 40, 'Coffee': 95, 'Tea': 47, 'Energy drink': 80, 'Sparkling water': 0, 'Pre-workout': 150, 'Chocolate': 20, 'Other': 0 };
+const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Mug', 'Shot', 'Glass', 'Pouch'];
 // Push reminders: a small Cloudflare Worker (see /worker) sends a silent push at your reminder time.
 const PUSH_URL = 'https://gentle-taper-push.michellefeliciano.workers.dev';
 const PUSH_KEY = 'BPHoUIzOrOvN_ZCYwSIz0MtfsQOAU7RaiAPcQBT4KvjTNUony1ux9FJ4oqvqM7JTqxvF-jakowvk4C1Eg-61KXw';
@@ -18,7 +19,9 @@ let cloudT = null, cloudBusy = false, cloudPending = false;
 const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function defaults() {
-  return { v: 2, water: {}, ms: {}, pace: {}, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', cutoff: '14:00', evening: false, eveningTime: '20:00', touchedPing: '', lastExport: '', nudgeSnooze: '', presets: [
+  return { v: 3, water: {}, ms: {}, pace: {}, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', cutoff: '14:00', waterOn: true, waterName: 'Water', waterUnit: 'glasses', evening: false, eveningTime: '20:00', touchedPing: '', lastExport: '', nudgeSnooze: '', presets: [
+    { id: 'can', name: 'Caffeinated can', type: 'Soda', container: 'Can', oz: 12, mg: 40, fav: true },
+    { id: 'decaf', name: 'Caffeine-free can', type: 'Soda', container: 'Can', oz: 12, mg: 0, fav: true },
     { id: 'soda', name: 'Soda', type: 'Soda', container: 'Bottle', oz: 20, mg: 57, fav: true },
     { id: 'coffee', name: 'Coffee', type: 'Coffee', container: 'Cup', oz: 8, mg: 95, fav: true },
     { id: 'energy', name: 'Energy drink', type: 'Energy drink', container: 'Can', oz: 16, mg: 160, fav: false },
@@ -40,14 +43,26 @@ function load() {
   return defaults();
 }
 let S = load();
-// v2: targets are stored in mg of caffeine instead of cans.
+// v2: targets are stored in mg instead of cans.  v3: the old "cans" counters become ordinary, editable drinks.
 function migrate() {
-  if (S.v === 2) return;
-  const k = S.settings.canMg || 40, f = x => Math.round(x * k / 5) * 5;
-  if (S.plan) S.plan.targets = S.plan.targets.map(f);
-  (S.pastPlans || []).forEach(p => { p.targets = p.targets.map(f); });
-  Object.keys(S.hist || {}).forEach(d => { if (S.hist[d] != null) S.hist[d] = f(S.hist[d]); });
-  S.v = 2; save();
+  if (S.v === 3) return;
+  const k = S.settings.canMg || 40;
+  if (S.v !== 2) {
+    const f = x => Math.round(x * k / 5) * 5;
+    if (S.plan) S.plan.targets = S.plan.targets.map(f);
+    (S.pastPlans || []).forEach(p => { p.targets = p.targets.map(f); });
+    Object.keys(S.hist || {}).forEach(d => { if (S.hist[d] != null) S.hist[d] = f(S.hist[d]); });
+  }
+  const P = S.settings.presets;
+  if (!P.some(p => p.id === 'can')) P.unshift({ id: 'can', name: 'Caffeinated can', type: 'Soda', container: 'Can', oz: 12, mg: k, fav: true });
+  if (!P.some(p => p.id === 'decaf')) P.splice(Math.min(1, P.length), 0, { id: 'decaf', name: 'Caffeine-free can', type: 'Soda', container: 'Can', oz: 12, mg: 0, fav: true });
+  Object.values(S.logs || {}).forEach(L => {
+    L.drinks = L.drinks || {};
+    if (L.caf > 0) { const e = L.drinks.can; L.drinks.can = { n: (e ? e.n : 0) + L.caf, mg: e ? e.mg : k, name: 'Caffeinated can', type: 'Soda', container: 'Can' }; }
+    if (L.decaf > 0) { const e = L.drinks.decaf; L.drinks.decaf = { n: (e ? e.n : 0) + L.decaf, mg: 0, name: 'Caffeine-free can', type: 'Soda', container: 'Can' }; }
+    L.caf = 0; L.decaf = 0;
+  });
+  S.v = 3; save();
 }
 migrate();
 function save() {
@@ -111,7 +126,7 @@ function target(date) {
 }
 
 /* ---------- ui state ---------- */
-const ui = { showCode: false, openRestart: false, followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
+const ui = { editId: null, showCode: false, openRestart: false, followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
 
 /* ---------- decoration ---------- */
 function vineSVG(horizontal) {
@@ -222,7 +237,7 @@ function weekHtml(w) {
   li.push(`Average caffeine: <b>${w.avgMg} mg</b> a day${dm ? ` — ${Math.abs(dm)} mg ${dm < 0 ? 'lower' : 'higher'} than the week before` : ''}`);
   if (w.tracked) li.push(`${w.onT} of ${w.tracked} logged days at or under target`);
   if (w.sym != null) li.push(`Symptoms averaged ${w.sym.toFixed(1)} of 3${w.prevSym != null ? (w.sym < w.prevSym - .15 ? ' — easing 🌱' : w.sym > w.prevSym + .15 ? ' — a bit higher than the week before' : ' — steady') : ''}`);
-  if (w.water != null) li.push(`Water: about ${n1(w.water)} glasses a day`);
+  if (w.water != null) li.push(`${esc(S.settings.waterName || 'Water')}: about ${n1(w.water)} ${esc(S.settings.waterUnit || 'glasses')} a day`);
   if (w.best) li.push(`Lightest day: ${nice(w.best)} (${totalMg(w.best)} mg)`);
   return `<ul class="wk">${li.map(x => `<li>${x}</li>`).join('')}</ul>`;
 }
@@ -333,10 +348,6 @@ function vToday() {
     </div>
     ${hero}
     ${alertCards()}
-    <div class="card"><h2>Cans I had</h2>
-      <div class="counter"><div class="name">Caffeinated cans<small>quick count, no details</small></div>${stepper('caf', caf, '', '', 'caffeinated can')}</div>
-      <div class="counter"><div class="name">Caffeine-free<small>just for the record</small></div>${stepper('dec', dec, 'sage', '', 'caffeine-free can')}</div>
-    </div>
     ${drinksCard(d, t)}
     ${loggedCard(d)}
     <div class="card"><h2>How am I feeling?</h2>
@@ -378,17 +389,16 @@ function alertCards() {
 function loggedCard(d) {
   const L = S.logs[d]; if (!L) return '';
   const ent = Object.entries(L.drinks || {});
-  if (!ent.length && !L.caf) return '';
+  if (!ent.length) return '';
   return `<div class="card"><h2>Logged this day</h2>
     <p class="muted" style="margin-top:-4px">Fix a name or caffeine amount, change a count, or remove a drink.</p>
-    ${L.caf ? `<div class="lrow"><div class="lname"><b>Caffeinated cans</b><small>${L.caf} × ${S.settings.canMg} mg</small></div><button class="round" data-act="delcans" aria-label="Remove cans">×</button></div>` : ''}
     ${ent.map(([id, e]) => `<div class="lrow"><div class="lname"><input data-did="${esc(id)}" data-f="name" value="${esc(e.name)}" aria-label="Name"><small>${e.n} × ${e.mg} mg = ${e.n * e.mg} mg</small></div>
       <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-did="${esc(id)}" data-f="mg" value="${e.mg}" aria-label="mg each"><span class="muted">mg</span>
       ${stepper('dr', e.n, '', `data-id="${esc(id)}"`, e.name)}
       <button class="round" data-act="deldrink" data-id="${esc(id)}" aria-label="Remove">×</button></div>`).join('')}
     <div class="btns"><button class="btn danger" data-act="delday">Clear this day’s drinks</button></div></div>`;
 }
-const waterRow = d => `<div class="counter"><div class="name">Water<small>glasses — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage', '', 'glass of water')}</div>`;
+const waterRow = d => S.settings.waterOn === false ? '' : `<div class="counter"><div class="name">${esc(S.settings.waterName || 'Water')}<small>${esc(S.settings.waterUnit || 'glasses')} — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage', '', S.settings.waterName || 'water')}</div>`;
 function lastCafRow(d) {
   if (totalMg(d) === 0) return '';
   const lc = S.logs[d]?.lastCaf || '', cut = S.settings.cutoff;
@@ -398,31 +408,49 @@ function lastCafRow(d) {
 
 const isFav = p => p.fav !== false;
 const drinkLine = p => [p.type, p.container, p.oz ? p.oz + ' oz' : '', p.mg + ' mg'].filter(Boolean).join(' · ');
+const datalists = () => {
+  const ty = [...new Set([...TYPES, ...S.settings.presets.map(p => p.type)].filter(Boolean))], co = [...new Set([...CONTAINERS, ...S.settings.presets.map(p => p.container)].filter(Boolean))];
+  return `<datalist id="dl-types">${ty.map(x => `<option value="${esc(x)}">`).join('')}</datalist><datalist id="dl-conts">${co.map(x => `<option value="${esc(x)}">`).join('')}</datalist>`;
+};
+function drinkEditor(p, idx, n) {
+  const id = esc(p.id);
+  return `<div class="dedit">
+    <div class="preset"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${id}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>
+      <input class="pname" type="text" data-pid="${id}" data-f="name" value="${esc(p.name)}" maxlength="40" aria-label="Drink name"></div>
+    <div class="preset"><input type="text" list="dl-types" data-pid="${id}" data-f="type" value="${esc(p.type || '')}" placeholder="Type (any)" maxlength="30" aria-label="Type">
+      <input type="text" list="dl-conts" data-pid="${id}" data-f="container" value="${esc(p.container || '')}" placeholder="Container (any)" maxlength="30" aria-label="Container"></div>
+    <div class="preset"><input class="pmg" type="number" inputmode="decimal" min="0" max="128" data-pid="${id}" data-f="oz" value="${p.oz ?? ''}" placeholder="oz" aria-label="Size in ounces"><span class="muted">oz</span>
+      <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-pid="${id}" data-f="mg" value="${p.mg}" aria-label="Caffeine in mg"><span class="muted">mg</span></div>
+    <div class="preset acts"><button class="btn ghost sm" data-act="mvup" data-id="${id}" aria-label="Move ${esc(p.name)} up" ${idx === 0 ? 'disabled' : ''}>↑ Up</button>
+      <button class="btn ghost sm" data-act="mvdown" data-id="${id}" aria-label="Move ${esc(p.name)} down" ${idx === n - 1 ? 'disabled' : ''}>↓ Down</button>
+      <button class="btn danger sm" data-act="delpreset" data-id="${id}" aria-label="Delete ${esc(p.name)}">Delete</button></div>
+  </div>`;
+}
 function drinkRow(p, dr) {
-  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>${esc(p.name)}</span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`, p.name)}</div>`;
+  const all = S.settings.presets, editing = ui.editId === p.id;
+  return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>${esc(p.name)}<button class="edit" data-act="editdrink" data-id="${esc(p.id)}" aria-pressed="${editing}" aria-label="Edit ${esc(p.name)}">✎</button></span><small>${esc(drinkLine(p))}</small></div>${stepper('dr', dr[p.id]?.n || 0, '', `data-id="${esc(p.id)}"`, p.name)}</div>${editing ? `<div class="editwrap">${drinkEditor(p, all.indexOf(p), all.length)}<div class="btns"><button class="btn" data-act="editdone">Done</button></div></div>` : ''}`;
 }
 function drinksCard(d, t) {
   const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets, mg = totalMg(d);
   const favs = P.filter(isFav), others = P.filter(p => !isFav(p));
-  const open = ui.moreOpen || others.some(p => dr[p.id]);
-  const opt = (arr, sel) => arr.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
+  const open = ui.moreOpen || others.some(p => dr[p.id] || p.id === ui.editId);
   const dft = ui.draft || {};
   const form = ui.newOpen ? `<div class="newdrink">
       <label class="f" for="nd-name">What is it?</label>
       <input id="nd-name" type="text" placeholder="e.g. Diet Coke, iced latte" maxlength="40" value="${esc(dft.name || '')}">
-      <div class="two"><div><label class="f" for="nd-type">Type</label><select id="nd-type">${opt(TYPES, dft.type || 'Soda')}</select></div>
-        <div><label class="f" for="nd-cont">Container</label><select id="nd-cont">${opt(CONTAINERS, dft.cont || 'Can')}</select></div></div>
+      <div class="two"><div><label class="f" for="nd-type">Type</label><input id="nd-type" type="text" list="dl-types" maxlength="30" value="${esc(dft.type || 'Soda')}"></div>
+        <div><label class="f" for="nd-cont">Container</label><input id="nd-cont" type="text" list="dl-conts" maxlength="30" value="${esc(dft.cont || 'Can')}"></div></div>
       <div class="two"><div><label class="f" for="nd-oz">Size (oz, optional)</label><input id="nd-oz" type="number" inputmode="decimal" min="0" max="128" placeholder="12" value="${esc(dft.oz || '')}"></div>
         <div><label class="f" for="nd-mg">Caffeine (mg)</label><input id="nd-mg" type="number" inputmode="numeric" min="0" max="1000" value="${esc(dft.mg ?? TYPE_MG.Soda)}"></div></div>
       <div class="switch"><label for="nd-fav">Add to my favorites</label><input id="nd-fav" type="checkbox" ${dft.fav === false ? '' : 'checked'}></div>
       <div class="btns"><button class="btn rose" data-act="savedrink">Save &amp; log one</button><button class="btn ghost" data-act="newdrink">Cancel</button></div>
     </div>` : '';
   return `<div class="card"><h2>Drinks</h2>
-      <p class="muted" style="margin-top:-4px">Tap ★ to pin a drink as a favorite. Each counts toward your target by caffeine amount.</p>
+      <p class="muted" style="margin-top:-4px">Tap ★ to pin a favorite or ✎ to edit a drink. Each counts toward your target by its caffeine amount.</p>
       ${favs.length ? favs.map(p => drinkRow(p, dr)).join('') : '<p class="muted">No favorites yet — star a drink below or add a new one.</p>'}
       ${others.length ? `<details class="more" ${open ? 'open' : ''}><summary>More drinks (${others.length})</summary>${others.map(p => drinkRow(p, dr)).join('')}</details>` : ''}
       ${ui.newOpen ? form : '<div class="btns"><button class="btn ghost" data-act="newdrink">+ New drink</button></div>'}
-      ${waterRow(d)}${lastCafRow(d)}
+      ${waterRow(d)}${lastCafRow(d)}${datalists()}
       <div class="totals"><b>${totalMg(d)} mg</b> caffeine today<br><span class="muted">${t != null ? `target ${t} mg` : 'no target yet'}${t != null && mg <= t ? ` · ${t - mg} mg to spare` : t != null ? ` · ${mg - t} mg over` : ''}</span></div>
     </div>`;
 }
@@ -577,7 +605,7 @@ function vProgress() {
       <div class="stat"><b>${avgMg}</b><span>avg mg caffeine / day (last 7 logged)</span></div>
       <div class="stat"><b>${cut}</b><span>day streak, last caffeine before ${fmtTime(S.settings.cutoff)}</span></div>
       <div class="stat"><b>${zeroDays}</b><span>caffeine-free days</span></div>
-      <div class="stat"><b>${avgWater}</b><span>avg glasses of water / day</span></div>
+      <div class="stat"><b>${avgWater}</b><span>avg ${esc(S.settings.waterUnit || 'glasses')} of ${esc((S.settings.waterName || 'water').toLowerCase())} / day</span></div>
       <div class="stat"><b>${longest}</b><span>longest streak on target</span></div>
       <div class="stat"><b>${S.plan ? Math.max(diff(S.plan.start, today()) + 1, 0) : 0}</b><span>days since your taper started</span></div></div></div>
     <div class="card"><h2>Milestones</h2>
@@ -612,24 +640,19 @@ function vSettings() {
         <button class="btn ghost" data-act="ics">Add to calendar (.ics)</button>
       </div>
     </div>
-    <div class="card"><h2>Caffeine amounts</h2>
-      <p class="muted" style="margin-top:-4px">Used for the quick “Caffeinated cans” counter. Adjust to match what you actually drink.</p>
-      <label class="f" for="canMg">Caffeine in one can (mg)</label>
-      <input id="canMg" type="number" inputmode="numeric" min="1" max="500" value="${st.canMg}">
+    <div class="card"><h2>My drinks</h2>
+      <p class="muted" style="margin-top:-4px">Rename, resize, reorder or delete any drink, or add your own. Type and container can be anything you like.</p>
+      ${st.presets.map((p, i) => drinkEditor(p, i, st.presets.length)).join('')}
+      <div class="btns"><button class="btn ghost" data-act="addpreset">+ Add a drink</button></div>
+      ${datalists()}
+    </div>
+    <div class="card"><h2>Water &amp; caffeine cutoff</h2>
+      <div class="switch"><label for="waterOn">Show a water tally</label><input id="waterOn" type="checkbox" ${st.waterOn !== false ? 'checked' : ''}></div>
+      <div class="two"><div><label class="f" for="waterName">Name</label><input id="waterName" type="text" maxlength="20" value="${esc(st.waterName || 'Water')}"></div>
+        <div><label class="f" for="waterUnit">Unit</label><input id="waterUnit" type="text" maxlength="20" value="${esc(st.waterUnit || 'glasses')}"></div></div>
       <label class="f" for="cutoff">Caffeine cutoff time</label>
       <input id="cutoff" type="time" value="${st.cutoff}">
       <p class="muted" style="margin:4px 0 0">Used for the “last caffeine before…” streak. Many people sleep better with none after early afternoon.</p>
-      <h3>My drinks</h3>
-      ${st.presets.map(p => `<div class="dedit">
-        <div class="preset"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>
-          <input class="pname" data-pid="${esc(p.id)}" data-f="name" value="${esc(p.name)}" aria-label="Drink name">
-          <button class="round" data-act="delpreset" data-id="${esc(p.id)}" aria-label="Remove">×</button></div>
-        <div class="preset"><select data-pid="${esc(p.id)}" data-f="type" aria-label="Type">${[...new Set([...TYPES, p.type].filter(Boolean))].map(x => `<option ${x === p.type ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-          <select data-pid="${esc(p.id)}" data-f="container" aria-label="Container">${[...new Set([...CONTAINERS, p.container].filter(Boolean))].map(x => `<option ${x === p.container ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
-        <div class="preset"><input class="pmg" type="number" inputmode="decimal" min="0" max="128" data-pid="${esc(p.id)}" data-f="oz" value="${p.oz ?? ''}" placeholder="oz" aria-label="Ounces"><span class="muted">oz</span>
-          <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-pid="${esc(p.id)}" data-f="mg" value="${p.mg}" aria-label="mg"><span class="muted">mg</span></div>
-      </div>`).join('')}
-      <div class="btns"><button class="btn ghost" data-act="addpreset">+ Add a drink</button></div>
     </div>
     <div class="card"><h2>Backups</h2>
       <p class="muted" style="margin-top:-4px">A safety copy is saved on this phone automatically each day (last 7), plus one before anything risky like erasing. They guard against mistakes in the app — but they live in the browser, so clearing site data removes them. Export a copy to Files or Drive now and then to keep your history safe.</p>
@@ -661,8 +684,6 @@ document.addEventListener('click', e => {
   switch (act) {
     case 'prev': ui.date = addDays(d, -1); ui.followToday = false; break;
     case 'next': if (d < today()) { ui.date = addDays(d, 1); ui.followToday = ui.date === today(); } break;
-    case 'caf+': setLog(d, { caf: Math.min(L().caf + 1, 99) }); stamp(d); break;
-    case 'caf-': if (L().caf > 0) setLog(d, { caf: L().caf - 1 }); break;
     case 'dr+': case 'dr-': {
       const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id];
       const pr = S.settings.presets.find(x => x.id === id) || (ent ? { ...ent, id } : null);
@@ -691,7 +712,6 @@ document.addEventListener('click', e => {
     case 'snooze': S.pace.snooze = addDays(today(), 2); save(); break;
     case 'nudgelater': S.settings.nudgeSnooze = addDays(today(), 3); save(); break;
     case 'deldrink': { const L2 = S.logs[d]; if (L2?.drinks) { const dr2 = { ...L2.drinks }; delete dr2[el.dataset.id]; setLog(d, { drinks: dr2 }); } break; }
-    case 'delcans': setLog(d, { caf: 0 }); break;
     case 'delday':
       if (confirm('Remove all drinks logged for this day? Your symptoms for the day stay.')) { delete S.logs[d]; delete S.water[d]; save(); } else return;
       break;
@@ -704,8 +724,6 @@ document.addEventListener('click', e => {
       break;
     }
     case 'delbackups': if (confirm('Delete all safety copies from this phone?')) { try { localStorage.removeItem(BK); } catch (err) { /* ignore */ } } else return; break;
-    case 'dec+': setLog(d, { decaf: Math.min(L().decaf + 1, 99) }); break;
-    case 'dec-': if (L().decaf > 0) setLog(d, { decaf: L().decaf - 1 }); break;
     case 'sev': setSym(d, { [el.dataset.k]: +el.dataset.v, done: true }); break;
     case 'savecheck': {
       setLog(d, {});
@@ -770,7 +788,20 @@ document.addEventListener('click', e => {
       S.settings.presets.push(pr); setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); ui.newOpen = false; ui.draft = null; toast(`Logged ${name}`); break;
     }
     case 'theme': S.settings.theme = el.dataset.v; save(); applyTheme(); break;
-    case 'delpreset': S.settings.presets = S.settings.presets.filter(x => x.id !== el.dataset.id); save(); break;
+    case 'delpreset': {
+      const pr = S.settings.presets.find(x => x.id === el.dataset.id);
+      if (pr && confirm(`Delete “${pr.name}” from your drinks? Days where you logged it keep it.`)) {
+        S.settings.presets = S.settings.presets.filter(x => x.id !== pr.id); if (ui.editId === pr.id) ui.editId = null; save();
+      } else return;
+      break;
+    }
+    case 'editdrink': ui.editId = ui.editId === el.dataset.id ? null : el.dataset.id; break;
+    case 'editdone': ui.editId = null; break;
+    case 'mvup': case 'mvdown': {
+      const arr = S.settings.presets, i = arr.findIndex(x => x.id === el.dataset.id), j = act === 'mvup' ? i - 1 : i + 1;
+      if (i >= 0 && j >= 0 && j < arr.length) { [arr[i], arr[j]] = [arr[j], arr[i]]; save(); }
+      break;
+    }
     case 'cloudon': cloudOn(); return;
     case 'cloudnow': cloudBackupNow(true); return;
     case 'cloudcode': ui.showCode = !ui.showCode; break;
@@ -809,17 +840,22 @@ document.addEventListener('change', async e => {
     S.settings.evening = t.checked; save(); syncPushDaily(true); render();
   } else if (t.id === 'eveTime') {
     S.settings.eveningTime = t.value || '20:00'; save(); syncPushDaily(true); toast('Follow-up time saved');
-  } else if (t.id === 'canMg') {
-    S.settings.canMg = clamp(parseInt(t.value, 10) || 40, 1, 500); save(); toast('Saved');
+  } else if (t.id === 'waterOn') {
+    S.settings.waterOn = t.checked; save(); render();
+  } else if (t.id === 'waterName') {
+    S.settings.waterName = t.value.trim() || 'Water'; save(); toast('Saved');
+  } else if (t.id === 'waterUnit') {
+    S.settings.waterUnit = t.value.trim() || 'glasses'; save(); toast('Saved');
   } else if (t.id === 'nd-type') {
-    document.getElementById('nd-mg').value = TYPE_MG[t.value] ?? 0;
+    const known = Object.keys(TYPE_MG).find(x => x.toLowerCase() === t.value.trim().toLowerCase());
+    if (known !== undefined) document.getElementById('nd-mg').value = TYPE_MG[known];
   } else if (t.dataset.pid) {
     const p = S.settings.presets.find(x => x.id === t.dataset.pid), f = t.dataset.f;
     if (p) {
       if (f === 'mg') p.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000);
       else if (f === 'oz') p.oz = parseFloat(t.value) > 0 ? parseFloat(t.value) : null;
       else if (f === 'name') p.name = t.value.trim() || 'Drink';
-      else p[f] = t.value;
+      else p[f] = t.value.trim();
       save(); toast('Saved');
     }
   } else if (t.id === 'lastCaf') {
@@ -1100,8 +1136,9 @@ function handleLaunchParams() {
   if (!quick) return;
   try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
   const d = today();
-  if (quick === 'cans') { setLog(d, { caf: Math.min((S.logs[d]?.caf || 0) + 1, 99) }); stamp(d); toast('Logged a can'); }
-  else { const pr = S.settings.presets.find(x => x.id === quick); if (!pr) return; setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); toast(`Logged ${pr.name}`); }
+  const pr = S.settings.presets.find(x => x.id === (quick === 'cans' ? 'can' : quick)); // 'cans' = old shortcut name
+  if (!pr) return;
+  setDrink(d, pr, 1); if (pr.mg > 0) stamp(d); toast(`Logged ${pr.name}`);
   ui.date = d; ui.followToday = true; if (S.plan || S.baseline) ui.view = 'today';
 }
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).

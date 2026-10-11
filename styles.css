@@ -268,3 +268,12 @@ details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep)
 
 .codebox { margin: 10px 0 4px; padding: 12px; border: 2px dashed var(--sage); border-radius: 18px; background: var(--sage-bg); }
 .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; font-weight: 700; letter-spacing: 0; white-space: nowrap; text-align: center; user-select: all; -webkit-user-select: all; }
+
+.edit { border: 0; background: none; font-size: 1.05rem; color: var(--ink-soft); padding: 2px 8px; cursor: pointer; min-height: 36px; }
+.edit[aria-pressed="true"] { color: var(--lav-deep); }
+.editwrap { background: var(--lav-bg); border-radius: 18px; padding: 4px 12px 10px; margin: 4px 0 8px; }
+.editwrap .dedit + .dedit { border-top: 0; }
+.preset input[type=text] { flex: 1; min-width: 0; width: auto; }
+.btn.sm { min-height: 40px; padding: 8px 12px; font-size: .9rem; }
+.preset.acts .btn { flex: 1; }
+.btn:disabled { opacity: .4; }
