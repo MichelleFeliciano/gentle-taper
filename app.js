@@ -386,16 +386,16 @@ function alertCards() {
       <div class="btns"><button class="btn" data-act="export">Export now</button><button class="btn ghost" data-act="nudgelater">Later</button></div></div>`;
   return h;
 }
+// A simple log of the day: names are read-only; only the amounts (how many, and mg each) can be changed.
 function loggedCard(d) {
   const L = S.logs[d]; if (!L) return '';
   const ent = Object.entries(L.drinks || {});
   if (!ent.length) return '';
   return `<div class="card"><h2>Logged this day</h2>
-    <p class="muted" style="margin-top:-4px">Fix a name or caffeine amount, change a count, or remove a drink.</p>
-    ${ent.map(([id, e]) => `<div class="lrow"><div class="lname"><input data-did="${esc(id)}" data-f="name" value="${esc(e.name)}" aria-label="Name"><small>${e.n} × ${e.mg} mg = ${e.n * e.mg} mg</small></div>
-      <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-did="${esc(id)}" data-f="mg" value="${e.mg}" aria-label="mg each"><span class="muted">mg</span>
-      ${stepper('dr', e.n, '', `data-id="${esc(id)}"`, e.name)}
-      <button class="round" data-act="deldrink" data-id="${esc(id)}" aria-label="Remove">×</button></div>`).join('')}
+    <p class="muted" style="margin-top:-4px">Change how many, or the caffeine in each. Counting down to 0 removes it.</p>
+    ${ent.map(([id, e]) => `<div class="lrow"><div class="lname"><b>${esc(e.name)}</b><small>${e.n} × ${e.mg} mg = ${e.n * e.mg} mg</small></div>
+      <input class="pmg" type="number" inputmode="numeric" min="0" max="1000" data-did="${esc(id)}" data-f="mg" value="${e.mg}" aria-label="${esc(e.name)}: mg each"><span class="muted">mg</span>
+      ${stepper('dr', e.n, '', `data-id="${esc(id)}"`, e.name)}</div>`).join('')}
     <div class="btns"><button class="btn danger" data-act="delday">Clear this day’s drinks</button></div></div>`;
 }
 const waterRow = d => S.settings.waterOn === false ? '' : `<div class="counter"><div class="name">${esc(S.settings.waterName || 'Water')}<small>${esc(S.settings.waterUnit || 'glasses')} — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage', '', S.settings.waterName || 'water')}</div>`;
@@ -711,7 +711,6 @@ document.addEventListener('click', e => {
     case 'maintok': S.pace.maint = addDays(today(), 3); save(); break;
     case 'snooze': S.pace.snooze = addDays(today(), 2); save(); break;
     case 'nudgelater': S.settings.nudgeSnooze = addDays(today(), 3); save(); break;
-    case 'deldrink': { const L2 = S.logs[d]; if (L2?.drinks) { const dr2 = { ...L2.drinks }; delete dr2[el.dataset.id]; setLog(d, { drinks: dr2 }); } break; }
     case 'delday':
       if (confirm('Remove all drinks logged for this day? Your symptoms for the day stay.')) { delete S.logs[d]; delete S.water[d]; save(); } else return;
       break;
@@ -864,7 +863,7 @@ document.addEventListener('change', async e => {
     S.settings.cutoff = t.value || '14:00'; save(); toast('Saved');
   } else if (t.dataset.did) {
     const en = S.logs[ui.date]?.drinks?.[t.dataset.did];
-    if (en) { if (t.dataset.f === 'mg') en.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); else en.name = t.value.trim() || en.name; save(); render(); }
+    if (en && t.dataset.f === 'mg') { en.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000); save(); render(); }
   } else if (t.id === 'remTime') {
     S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); syncPushDaily(true); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
