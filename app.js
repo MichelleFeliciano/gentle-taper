@@ -1,23 +1,62 @@
 'use strict';
 
+/*
+ * Gentle Taper — a private caffeine-taper tracker. One-page PWA, no build step, no accounts.
+ *
+ * FILES   index.html  page shell            styles.css  all styling (light + dark themes)
+ *         app.js      this file             sw.js       offline cache + push notifications
+ *         worker/     Cloudflare Worker: daily push reminders + encrypted cloud backup
+ *
+ * DATA    Everything the user owns is ONE object, `S`, saved as JSON in localStorage (see KEY). Shape (version 3):
+ *   plan      { start, targets:[mg per day], pausedAt, completedOn?, fromBaseline? } or null
+ *   baseline  { start, taperDays } while the app learns the user's habit for 3 days, otherwise null
+ *   hist      { 'YYYY-MM-DD': mg }   the target that applied on each past day (frozen so edits never rewrite history)
+ *   logs      { 'YYYY-MM-DD': { drinks:{ key:{ n, mg, name, type, container } }, adds:[{ id, t }], lastCaf:'HH:MM',
+ *                               caf, decaf } }   caf/decaf are legacy counters, always 0 now (migrated into `drinks`)
+ *   sym       { 'YYYY-MM-DD': { headache, fatigue, irritability, nausea, focus, mood: 0-3, done, notes } }
+ *   water     { 'YYYY-MM-DD': count }   a plain tally; it is NOT a drink and never makes a day count as "logged"
+ *   ms, pace  milestones reached / dates the gentle prompts were dismissed
+ *   settings  reminders, caffeine cutoff, theme, water labels, and `presets` (the user's editable drink list)
+ *
+ * RULES   Dates are local-time 'YYYY-MM-DD' strings (they sort as text). Caffeine is measured in mg.
+ *         A day is "logged" once S.logs[date] exists. Today's partial day never completes a baseline or a milestone.
+ *
+ * FLOW    Data changes call save(); render() rebuilds the visible tab as an HTML string (the v* functions);
+ *         all clicks/inputs are handled by delegated listeners on `document` (see "events").
+ *
+ * Sections: constants & state · dates · plan logic · ui state · decoration · helpers · safety copies · views · charts ·
+ *           events · push reminders · encrypted cloud backup · local reminders · theme · boot
+ */
+
 /* ---------- constants & state ---------- */
+// localStorage key that holds the whole app state `S`. The "-v1" is historic; the data version is S.v.
 const KEY = 'gentle-taper-v1';
+// The six withdrawal symptoms checked in each day, as [storage key, label]. Each is rated 0-3.
 const SYMS = [
   ['headache', 'Headache'], ['fatigue', 'Fatigue'], ['irritability', 'Irritability'],
   ['nausea', 'Nausea'], ['focus', 'Trouble focusing'], ['mood', 'Low mood'],
 ];
+// Labels for the 0-3 severity scale, indexed by the stored value.
 const SEV = ['None', 'Mild', 'Moderate', 'Strong'];
 // Suggestions only: a drink's type and container can be any text.
 const TYPES = ['Soda', 'Coffee', 'Tea', 'Energy drink', 'Sparkling water', 'Pre-workout', 'Chocolate', 'Other'];
+// Typical caffeine (mg) per type, used only to pre-fill the "new drink" form. Never applied silently.
 const TYPE_MG = { 'Soda': 40, 'Coffee': 95, 'Tea': 47, 'Energy drink': 80, 'Sparkling water': 0, 'Pre-workout': 150, 'Chocolate': 20, 'Other': 0 };
 const CONTAINERS = ['Can', 'Bottle', 'Cup', 'Mug', 'Shot', 'Glass', 'Pouch'];
 // Push reminders: a small Cloudflare Worker (see /worker) sends a silent push at your reminder time.
 const PUSH_URL = 'https://gentle-taper-push.michellefeliciano.workers.dev';
+// Public VAPID key (safe to publish): it identifies this app to the browser's push service.
 const PUSH_KEY = 'BPHoUIzOrOvN_ZCYwSIz0MtfsQOAU7RaiAPcQBT4KvjTNUony1ux9FJ4oqvqM7JTqxvF-jakowvk4C1Eg-61KXw';
 const CLOUD_KEY = 'gentle-taper-cloud'; // recovery code + last upload time (kept out of S so it never lands in exports)
 let cloudT = null, cloudBusy = false, cloudPending = false;
+// Reads a CSS custom property (e.g. '--line') so the SVG charts follow the light/dark theme.
 const cv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
+/**
+ * A brand-new, empty app state (version 3) with the starter drink list.
+ * Also the template that normalize() fills missing keys from, so new settings always get a default.
+ * @returns {object} a fresh state object
+ */
 function defaults() {
   return { v: 3, water: {}, ms: {}, pace: {}, baseline: null, plan: null, pastPlans: [], hist: {}, logs: {}, sym: {}, settings: { remind: false, time: '09:00', lastNotified: '', canMg: 40, theme: 'auto', cutoff: '14:00', waterOn: true, waterName: 'Water', waterUnit: 'glasses', evening: false, eveningTime: '20:00', touchedPing: '', lastExport: '', nudgeSnooze: '', presets: [
     { id: 'can', name: 'Caffeinated can', type: 'Soda', container: 'Can', oz: 12, mg: 40, fav: true },
@@ -28,6 +67,13 @@ function defaults() {
     { id: 'tea', name: 'Tea', type: 'Tea', container: 'Cup', oz: 8, mg: 47, fav: false },
   ] } };
 }
+/**
+ * Turns any parsed state (saved data, an import, a backup, a cloud restore) into a complete, safe state object.
+ * Missing keys are filled from defaults(); containers that must be objects/arrays are repaired.
+ * `v` is copied as-is (not defaulted) so migrate() can tell old data from new.
+ * @param {object} s parsed state of any age
+ * @returns {object} complete state
+ */
 function normalize(s) {
   const d = defaults(), out = Object.assign(d, s, { v: s.v, settings: Object.assign(d.settings, s.settings) });
   if (!Array.isArray(out.settings.presets)) out.settings.presets = defaults().settings.presets;
@@ -35,6 +81,9 @@ function normalize(s) {
   ['hist', 'logs', 'sym', 'water', 'ms', 'pace'].forEach(k => { if (!out[k] || typeof out[k] !== 'object') out[k] = {}; });
   return out;
 }
+/**
+ * Reads the saved state from localStorage; returns an empty state if nothing is saved or the JSON is damaged.
+ */
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
@@ -42,17 +91,22 @@ function load() {
   } catch (e) { /* fall through */ }
   return defaults();
 }
+// S is the single source of truth for all user data (see the data model at the top of this file).
 let S = load();
 // v2: targets are stored in mg instead of cans.  v3: the old "cans" counters become ordinary, editable drinks.
 function migrate() {
+  // Idempotent: already-current data (v3) returns immediately.
   if (S.v === 3) return;
   const k = S.settings.canMg || 40;
+  // Stage 1 (data older than v2): targets and history were stored as can counts, so convert them to mg.
   if (S.v !== 2) {
     const f = x => Math.round(x * k / 5) * 5;
     if (S.plan) S.plan.targets = S.plan.targets.map(f);
     (S.pastPlans || []).forEach(p => { p.targets = p.targets.map(f); });
     Object.keys(S.hist || {}).forEach(d => { if (S.hist[d] != null) S.hist[d] = f(S.hist[d]); });
   }
+  // Stage 2 (to v3): the old built-in "cans" counters become ordinary drinks, and each day's old caf/decaf counts are
+  // folded into logged drink entries at the can's mg, so every day's total stays exactly the same.
   const P = S.settings.presets;
   if (!P.some(p => p.id === 'can')) P.unshift({ id: 'can', name: 'Caffeinated can', type: 'Soda', container: 'Can', oz: 12, mg: k, fav: true });
   if (!P.some(p => p.id === 'decaf')) P.splice(Math.min(1, P.length), 0, { id: 'decaf', name: 'Caffeine-free can', type: 'Soda', container: 'Can', oz: 12, mg: 0, fav: true });
@@ -64,25 +118,49 @@ function migrate() {
   });
   S.v = 3; save();
 }
+// Runs once at start-up on whatever was saved (no-op when already v3).
+// CAUTION: it calls save(), so everything save() touches at this point must be a hoisted function declaration, not a
+// const/let defined further down the file (that caused a start-up crash once).
 migrate();
+/**
+ * Writes S to localStorage, then lets the cloud-backup scheduler know something changed.
+ * The cloud hook is wrapped so a failure there can never stop the user's data from being saved.
+ */
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Could not save on this device'); }
   try { cloudDirty(); } catch (e) { /* the cloud hook must never break saving */ }
 }
 
 /* ---------- dates ---------- */
+// Date/time helpers. Dates are local-time 'YYYY-MM-DD' strings, so they compare and sort as plain text.
 const pad = n => String(n).padStart(2, '0');
+// Date -> 'YYYY-MM-DD' (local time).
 const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// 'YYYY-MM-DD' -> Date at local midnight (avoids the UTC shift of `new Date('YYYY-MM-DD')`).
 const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+// Today's date string. Called fresh each time so the app keeps working across midnight.
 const today = () => fmt(new Date());
+// Date string + n days (n may be negative). Uses setDate so daylight-saving changes are handled.
 const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return fmt(d); };
+// Whole days from a to b (b - a). Rounded so a daylight-saving hour never produces a fractional day.
 const diff = (a, b) => Math.round((parse(b) - parse(a)) / 864e5);
+// 'Saturday, October 10' style label, in the user's locale.
 const nice = s => parse(s).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+// '10/10' style label for chart axes and lists.
 const short = s => { const d = parse(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
+// HTML-escapes text before it is placed into an HTML string. Use on every user-supplied value.
 const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Limits v to the range a..b.
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /* ---------- plan logic ---------- */
+/**
+ * Builds a linear taper schedule: n days stepping from `from` mg down to exactly 0 on the last day,
+ * rounded to the nearest 5 mg. A one-day schedule is just [0].
+ * @param {number} from starting mg per day
+ * @param {number} n total days (including the zero day)
+ * @returns {number[]} mg target for each day
+ */
 function gen(from, n) {
   return Array.from({ length: n }, (_, i) => (n === 1 ? 0 : Math.round(from * (1 - i / (n - 1)) / 5) * 5));
 }
@@ -91,6 +169,11 @@ function baselineDays(inclToday = true) {
   const b = S.baseline, t = today();
   return b ? Object.keys(S.logs).filter(d => d >= b.start && (inclToday ? d <= t : d < t)).sort() : [];
 }
+/**
+ * When the 3-day "learn my habit" period has three FINISHED logged days, build the taper from their average mg
+ * and start it today. Only finished days count, so an early-morning check-in can't complete it with a 0.
+ * If the average is already near zero there is nothing to taper, so the baseline just ends.
+ */
 function checkBaseline() {
   const b = S.baseline; if (!b || S.plan) return;
   const days = baselineDays(false).slice(0, 3); if (days.length < 3) return; // only finished days count
@@ -101,12 +184,20 @@ function checkBaseline() {
   S.plan = { start, targets: gen(mgStart, b.taperDays), pausedAt: null, fromBaseline: true };
   save(); toast(`Baseline done: about ${mgStart} mg a day. Your taper starts today.`);
 }
+/**
+ * Which day of the plan (0-based) `date` falls on, or null if before the plan starts.
+ * While paused the index stays frozen at the day the pause began, so the schedule resumes where it left off.
+ * Not clamped to the plan length: a value past the end means the taper is finished.
+ */
 function planIdx(date) {
   const p = S.plan; if (!p || date < p.start) return null;
   let i = diff(p.start, date);
   if (p.pausedAt) i = Math.min(i, diff(p.start, p.pausedAt));
   return i;
 }
+/**
+ * The plan's target mg for `date` computed from the live schedule (null before the plan starts). After the last day it stays at the final value.
+ */
 function targetRaw(date) {
   const i = planIdx(date); if (i === null) return null;
   const t = S.plan.targets;
@@ -120,15 +211,23 @@ function snapshot() {
     if (d === t || S.hist[d] == null) S.hist[d] = targetRaw(d);
   }
 }
+/**
+ * The target to show for `date`: the frozen value from `hist` for past days, otherwise the live schedule.
+ */
 function target(date) {
   if (date < today() && S.hist[date] != null) return S.hist[date];
   return targetRaw(date);
 }
 
 /* ---------- ui state ---------- */
+// Transient screen state (NOT saved): current tab/date, which editor is open, a half-typed new-drink form, etc.
+// followToday is true while the user is looking at today, so the view can roll forward after midnight.
 const ui = { editId: null, showCode: false, openRestart: false, followToday: true, draft: null, newOpen: false, moreOpen: false, view: 'today', date: today(), range: 14, symSel: new Set(['avg']) };
 
 /* ---------- decoration ---------- */
+/**
+ * Generates the decorative climbing-vine illustration as an SVG string (vertical for the side borders, horizontal for the header).
+ */
 function vineSVG(horizontal) {
   const leaf = (x, y, r, s, c) => `<path transform="translate(${x} ${y}) rotate(${r}) scale(${s})" d="M0 0C6-9 18-9 26 0C18 9 6 9 0 0Z" fill="${c}"/>`;
   const bloom = (x, y) => `<g transform="translate(${x} ${y})">${[0, 72, 144, 216, 288].map(a => `<ellipse cx="0" cy="-5" rx="3.4" ry="5" transform="rotate(${a})" fill="#d8cdea"/>`).join('')}<circle r="2.3" fill="#fbe7a8"/></g>`;
@@ -146,6 +245,9 @@ function vineSVG(horizontal) {
     ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 60"><g transform="translate(0 60) rotate(-90)">${body}</g></svg>`
     : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 400">${body}</svg>`;
 }
+/**
+ * Publishes the vine SVGs as CSS custom properties (--vine, --vine-h) that styles.css uses as repeating backgrounds.
+ */
 function applyDecor() {
   const url = svg => `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
   const r = document.documentElement.style;
@@ -154,17 +256,35 @@ function applyDecor() {
 }
 
 /* ---------- helpers ---------- */
+// Small pop-up message at the bottom of the screen (an aria-live region, so screen readers announce it).
 let toastTimer;
+/**
+ * Shows `msg` briefly, replacing any message already showing.
+ */
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
 }
+// Rounds to one decimal place and returns it as text (7 -> '7', 3.14 -> '3.1').
 const n1 = v => String(Math.round(v * 10) / 10);
+/**
+ * Total mg from the drinks logged on day `d` (sum of count x mg for each entry).
+ */
 function drinkMg(d) { const dr = S.logs[d]?.drinks || {}; return Object.values(dr).reduce((a, x) => a + x.n * x.mg, 0); }
+/**
+ * A day's total caffeine in mg. The `caf` term only matters for very old data that hasn't been migrated; it is 0 afterwards.
+ */
 function totalMg(d) { const L = S.logs[d]; return L ? Math.round(L.caf * S.settings.canMg + drinkMg(d)) : 0; }
+// '14:05' -> '2:05 pm'.
 const fmtTime = t => { const [h, m] = t.split(':').map(Number); return `${h % 12 || 12}:${pad(m)} ${h < 12 ? 'am' : 'pm'}`; };
+// Current time (or `at`) as 'HH:MM' in local time. A named function so tests can replace it.
 function hhmm(at) { const n = at || new Date(); return `${pad(n.getHours())}:${pad(n.getMinutes())}`; }
+/**
+ * Records WHEN a caffeinated drink was added today. `adds` is a stack of { id, t }; the newest entry is the day's "last caffeine" time.
+ * Only today is stamped (we never invent times for past days).
+ * @param {string} d day  @param {string} id entry key in logs[d].drinks  @param {string} [at] 'HH:MM' override
+ */
 function stamp(d, id, at) {
   if (d !== today() || !S.logs[d]) return;
   const L = S.logs[d], t = at || hhmm();
@@ -182,6 +302,11 @@ function unstamp(d, id, removedAll) {
   else if (totalMg(d) === 0) L.lastCaf = null; // no caffeine left on the day
   save();
 }
+/**
+ * Counts consecutive logged days, ending today (or yesterday if today isn't logged yet), for which ok(date) is true.
+ * @param {Function} ok predicate on a date string
+ * @param {boolean} [completeOnly] skip today entirely (today is still in progress)
+ */
 function streakOf(ok, completeOnly) {
   let n = 0;
   for (let d = today(); n < 800; d = addDays(d, -1)) {
@@ -190,12 +315,18 @@ function streakOf(ok, completeOnly) {
   }
   return n;
 }
+// Current streak of days at or under the day's mg target (today counts only once it's logged).
 const streakNow = () => streakOf(d => target(d) != null && totalMg(d) <= target(d));
 // days with no caffeine, or whose last caffeine was before the cutoff time
 const cutoffStreak = () => streakOf(d => totalMg(d) === 0 || (S.logs[d].lastCaf && S.logs[d].lastCaf <= S.settings.cutoff));
+// Milestones: [id, label, message]. Each is awarded once, then shown for two days and listed under Progress.
 const MILESTONES = [['s7', '7 days on target', 'A whole week on target — that’s real progress. 🌿'],
   ['s14', '14 days on target', 'Two weeks of steady care. Be proud of yourself. 🌱'],
   ['zero', 'First caffeine-free day', 'Your first caffeine-free day. 🌸']];
+/**
+ * Awards milestones (7 and 14 days on target, first caffeine-free day) and marks the plan complete on its last day.
+ * Counts finished days only, so a half-logged today can't trigger anything early. Called on every render; each award happens once.
+ */
 function checkMilestones() {
   if (!S.plan) return;
   const t = today(), st = streakOf(d => target(d) != null && totalMg(d) <= target(d), true);
@@ -209,6 +340,9 @@ function checkMilestones() {
     if (z) set('zero', z);
   }
 }
+/**
+ * Longest-ever run of consecutive days at or under target (a slip never erases it).
+ */
 function bestStreak() {
   const ds = Object.keys(S.logs).filter(d => target(d) != null).sort();
   let best = 0, run = 0, prev = null;
@@ -235,6 +369,11 @@ function maintAlert() {
   const days = Object.keys(S.logs).filter(d => d <= t && d >= addDays(t, -4)).sort().slice(-3);
   return days.length >= 2 && days.filter(d => totalMg(d) > 0).length >= 2;
 }
+/**
+ * Summary of the 7 days ending `end`, compared with the 7 before: average mg, days on target, symptom average,
+ * water average and the lightest day. Used for the "This week" card.
+ * @param {string} end last day of the window
+ */
 function weekStats(end) {
   const days = Array.from({ length: 7 }, (_, i) => addDays(end, i - 6)), prev = days.map(d => addDays(d, -7));
   const logged = days.filter(d => S.logs[d]), pl = prev.filter(d => S.logs[d]);
@@ -245,6 +384,9 @@ function weekStats(end) {
     onT: tracked.filter(d => totalMg(d) <= target(d)).length, tracked: tracked.length, sym: sv.length ? avg(sv) : null, prevSym: psv.length ? avg(psv) : null,
     water: wv.length ? avg(wv) : null, best };
 }
+/**
+ * Turns a weekStats() result into a short bulleted list (HTML string).
+ */
 function weekHtml(w) {
   const li = [];
   const dm = w.prevAvg != null ? w.avgMg - w.prevAvg : null;
@@ -255,6 +397,9 @@ function weekHtml(w) {
   if (w.best) li.push(`Lightest day: ${nice(w.best)} (${totalMg(w.best)} mg)`);
   return `<ul class="wk">${li.map(x => `<li>${x}</li>`).join('')}</ul>`;
 }
+/**
+ * The "You reached zero" summary card: start amount, days taken, caffeine-free days and the symptom change since the start.
+ */
 function completeCard() {
   const p = S.plan, days = diff(p.start, p.completedOn) + 1;
   const zero = Object.keys(S.logs).filter(d => d >= p.start && totalMg(d) === 0).length;
@@ -283,9 +428,19 @@ function paceAlert() {
 }
 
 /* ---------- automatic safety copies ---------- */
+// localStorage key for the on-device safety copies (separate from S so they never nest inside each other).
 const BK = 'gentle-taper-backups';
+/**
+ * All safety copies, oldest first: [{ date, label, ts, json }]. Returns [] if none or unreadable.
+ */
 function readBackups() { try { return JSON.parse(localStorage.getItem(BK)) || []; } catch (e) { return []; } }
+// The day the automatic copy was last taken, so the 30-second timer doesn't re-read storage needlessly.
 let backedUpOn = '';
+/**
+ * Saves a safety copy of S in this browser. Automatic copies: at most one per day, newest 7 kept.
+ * Labelled copies (taken before Erase / Import / Restore): newest 5 kept. Nothing is saved for an empty state.
+ * @param {string} [label] omit for the daily automatic copy
+ */
 function pushBackup(label) {
   if (!Object.keys(S.logs).length && !S.plan) return;
   if (!label && backedUpOn === today()) return;
@@ -299,11 +454,21 @@ function pushBackup(label) {
   } catch (e) { /* storage full: skip */ }
 }
 
+/**
+ * Which entry of a day's log a drink belongs to. A day keeps one entry per drink AND per caffeine amount, so editing a drink's
+ * mg later never re-prices drinks already logged that day. Keys are `id` (first amount) or `id~mg` (any other amount).
+ * @param {object} L the day's log  @param {object} p the drink (needs id and mg)
+ */
 function entryKey(L, p) {
   const keys = Object.keys(L.drinks || {}), mine = k => k === p.id || k.startsWith(p.id + '~');
   const hit = keys.find(k => mine(k) && L.drinks[k].mg === p.mg);
   return hit || (keys.some(mine) ? `${p.id}~${p.mg}` : p.id);
 }
+/**
+ * Adds (+1) or removes (-1) one of drink `p` on day `d`; counting down to 0 deletes the entry.
+ * Count-downs also roll the "last caffeine" time back (see unstamp).
+ * @returns {string|null} the entry key that changed, or null if there was nothing to remove
+ */
 function setDrink(d, p, delta) {
   const L = Object.assign({ caf: 0, decaf: 0 }, S.logs[d]); const dr = Object.assign({}, L.drinks);
   const key = entryKey(L, p);
@@ -315,10 +480,21 @@ function setDrink(d, p, delta) {
   if (delta < 0) unstamp(d, key, !n);
   return key;
 }
+/**
+ * Merges `patch` into day `d`'s log (creating it, which marks the day as logged) and saves.
+ * The first change on today tells the reminder service the user has logged something, so it skips the reminder.
+ */
 function setLog(d, patch) { S.logs[d] = Object.assign({ caf: 0, decaf: 0 }, S.logs[d], patch); save(); if (d === today()) pushTouch(); }
+/**
+ * Merges `patch` into day `d`'s symptom check-in and saves.
+ */
 function setSym(d, patch) { S.sym[d] = Object.assign({}, S.sym[d], patch); save(); }
 
 /* ---------- views ---------- */
+/**
+ * Redraws the current tab. First runs the checks that depend on the date (baseline completion, frozen history,
+ * milestones), then replaces #app's HTML and restores the scroll position. Everything visible is rebuilt from S each time.
+ */
 function render() {
   checkBaseline();
   snapshot();
@@ -337,6 +513,11 @@ function render() {
   window.scrollTo(0, y);
 }
 
+/**
+ * HTML for a [-] value [+] control. The buttons carry data-act="<act>-" / "<act>+" for the click handler.
+ * @param {string} act action prefix  @param {number} val shown count  @param {string} [cls] extra class on +
+ * @param {string} [extra] extra attributes (e.g. data-id)  @param {string} [label] spoken name for screen readers
+ */
 function stepper(act, val, cls, extra = '', label = '') {
   return `<div class="stepper">
     <button class="round" data-act="${act}-" ${extra} aria-label="${label ? 'One less ' + esc(label) : 'Less'}">−</button>
@@ -344,6 +525,9 @@ function stepper(act, val, cls, extra = '', label = '') {
     <button class="round plus ${cls || ''}" data-act="${act}+" ${extra} aria-label="${label ? 'One more ' + esc(label) : 'More'}">+</button></div>`;
 }
 
+/**
+ * The Today tab: target card, prompts, drinks, the day's log, symptom check-in and save button. Works for any past day via the date arrows.
+ */
 function vToday() {
   const d = ui.date, t = target(d), L = S.logs[d], Y = S.sym[d] || {};
   const caf = L ? L.caf : 0, dec = L ? L.decaf : 0, isToday = d === today();
@@ -381,6 +565,10 @@ function vToday() {
     <button class="btn rose block" data-act="savecheck">${L && Y.done ? 'Update check-in' : 'Save today’s check-in'}</button>`;
 }
 
+/**
+ * The gentle prompt cards at the top of Today, in priority order: new milestone, symptoms-are-rough (hold/pause), taper complete,
+ * went-over-today, caffeine-crept-back, weekly recap, and the weekly "export a backup" nudge. Only shown when viewing today.
+ */
 function alertCards() {
   const t = today(); let h = '';
   MILESTONES.forEach(([k, label, msg]) => { if (S.ms[k] && S.ms[k] >= addDays(t, -1)) h += `<div class="card note"><b>${esc(label)}</b><br>${esc(msg)}</div>`; });
@@ -419,7 +607,11 @@ function loggedCard(d) {
       ${stepper('dr', e.n, '', `data-id="${esc(id)}"`, e.name)}</div>`).join('')}
     <div class="btns"><button class="btn danger" data-act="delday">Clear this day’s drinks</button></div></div>`;
 }
+// The water tally row (separate from drinks; name/unit/visibility come from settings).
 const waterRow = d => S.settings.waterOn === false ? '' : `<div class="counter"><div class="name">${esc(S.settings.waterName || 'Water')}<small>${esc(S.settings.waterUnit || 'glasses')} — just a tally</small></div>${stepper('wat', S.water[d] || 0, 'sage', '', S.settings.waterName || 'water')}</div>`;
+/**
+ * "Last caffeine at" time editor with a note on whether it's before the user's cutoff. Hidden when the day has no caffeine.
+ */
 function lastCafRow(d) {
   if (totalMg(d) === 0) return '';
   const lc = S.logs[d]?.lastCaf || '', cut = S.settings.cutoff;
@@ -427,12 +619,20 @@ function lastCafRow(d) {
   return `<div class="lastcaf"><div class="row"><label for="lastCaf" style="font-weight:600">Last caffeine at</label><input id="lastCaf" type="time" value="${esc(lc)}" style="width:auto"></div><p class="muted" style="margin:4px 0 0">${note}</p></div>`;
 }
 
+// Drinks are favorites unless explicitly set to false (older saved drinks have no `fav` field).
 const isFav = p => p.fav !== false;
+// One-line description of a drink: type · container · size · mg.
 const drinkLine = p => [p.type, p.container, p.oz ? p.oz + ' oz' : '', p.mg + ' mg'].filter(Boolean).join(' · ');
+// <datalist> suggestions for the free-text Type and Container boxes: built-in names plus any the user has already used.
 const datalists = () => {
   const ty = [...new Set([...TYPES, ...S.settings.presets.map(p => p.type)].filter(Boolean))], co = [...new Set([...CONTAINERS, ...S.settings.presets.map(p => p.container)].filter(Boolean))];
   return `<datalist id="dl-types">${ty.map(x => `<option value="${esc(x)}">`).join('')}</datalist><datalist id="dl-conts">${co.map(x => `<option value="${esc(x)}">`).join('')}</datalist>`;
 };
+/**
+ * Editing form for one drink (name, type, container, size, mg, favorite, reorder, delete). Used both inline on Today and in Settings.
+ * Edits are saved by the delegated 'change' listener via the data-pid / data-f attributes.
+ * @param {object} p the drink  @param {number} idx its position  @param {number} n total drinks
+ */
 function drinkEditor(p, idx, n) {
   const id = esc(p.id);
   return `<div class="dedit">
@@ -447,10 +647,16 @@ function drinkEditor(p, idx, n) {
       <button class="btn danger sm" data-act="delpreset" data-id="${id}" aria-label="Delete ${esc(p.name)}">Delete</button></div>
   </div>`;
 }
+/**
+ * One row in the Drinks list: favorite star, name, edit button, and a single + that logs one. Counts are shown only in the day's log.
+ */
 function drinkRow(p, dr) {
   const all = S.settings.presets, editing = ui.editId === p.id;
   return `<div class="counter"><div class="name"><span class="nm1"><button class="star ${isFav(p) ? 'on' : ''}" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p)}" aria-label="Favorite: ${esc(p.name)}">★</button>${esc(p.name)}<button class="edit" data-act="editdrink" data-id="${esc(p.id)}" aria-pressed="${editing}" aria-label="Edit ${esc(p.name)}">✎</button></span><small>${esc(drinkLine(p))}</small></div><div class="stepper"><button class="round plus" data-act="dr+" data-id="${esc(p.id)}" data-quick="1" aria-label="Log one ${esc(p.name)}">+</button></div></div>${editing ? `<div class="editwrap">${drinkEditor(p, all.indexOf(p), all.length)}<div class="btns"><button class="btn" data-act="editdone">Done</button></div></div>` : ''}`;
 }
+/**
+ * The Drinks card: favorites, "More drinks", the new-drink form, the water tally, last-caffeine time and the day's total versus target.
+ */
 function drinksCard(d, t) {
   const L = S.logs[d], dr = L?.drinks || {}, P = S.settings.presets, mg = totalMg(d);
   const favs = P.filter(isFav), others = P.filter(p => !isFav(p));
@@ -476,6 +682,9 @@ function drinksCard(d, t) {
     </div>`;
 }
 
+/**
+ * The Plan tab. Three states: learning-your-habit (baseline), no plan yet (setup form), or an active plan (status, adjust, restart, per-day targets).
+ */
 function vPlan() {
   const p = S.plan;
   if (!p && S.baseline) {
@@ -522,6 +731,9 @@ function vPlan() {
     <div class="card"><h2>Day-by-day targets</h2>
       <p class="muted">Tap − / + to change any upcoming day (10 mg at a time).</p>${rows}</div>`;
 }
+/**
+ * Shared form for starting or restarting a taper: daily mg and length, or "track 3 days first" to learn the habit.
+ */
 function setupForm() {
   return `<label class="f" for="stCans">Caffeine per day now (mg)</label>
     <input id="stCans" type="number" inputmode="numeric" min="5" max="2000" step="5" value="${S.plan ? S.plan.targets[0] : 200}">
@@ -533,6 +745,11 @@ function setupForm() {
 }
 
 /* ---- charts ---- */
+/**
+ * Hand-drawn SVG line chart (no library). Each series is { color, vals[], dash?, dots?, w? }; null values leave gaps.
+ * Gridline spacing is chosen so there are about five lines. `label` becomes the accessible description.
+ * @returns {string} SVG markup
+ */
 function chart({ dates, series, ymax, label }) {
   const W = 340, H = 190, Lm = 26, R = 10, T = 10, B = 24, pw = W - Lm - R, ph = H - T - B, n = dates.length;
   const x = i => Lm + (n < 2 ? pw / 2 : pw * i / (n - 1));
@@ -556,6 +773,9 @@ function chart({ dates, series, ymax, label }) {
   }).join('');
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label || 'Chart')}">${g}${lines}</svg>`;
 }
+/**
+ * The list of dates for the Progress range chips (7 / 14 / 30 days, or from the first record to today).
+ */
 function rangeDates() {
   const t = today();
   const first = [S.plan?.start, ...Object.keys(S.logs), ...Object.keys(S.sym)].filter(Boolean).sort()[0] || t;
@@ -564,13 +784,20 @@ function rangeDates() {
   for (let d = ui.range === 0 ? first : start; d <= t; d = addDays(d, 1)) out.push(d);
   return out.length ? out : [t];
 }
+// Arithmetic mean, or null for an empty list.
 const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+/**
+ * A day's symptom rating: one symptom (k) or the average of all six ('avg'). null when no check-in was saved that day.
+ */
 function symVal(d, k) {
   const e = S.sym[d]; if (!e || !e.done) return null;
   if (k === 'avg') return avg(SYMS.map(([s]) => e[s] ?? 0));
   return e[k] ?? 0;
 }
 
+/**
+ * The Progress tab: this week's summary, caffeine-vs-target chart, highlight stats, milestones and the symptom chart with a plain-language trend.
+ */
 function vProgress() {
   if (!S.plan && !Object.keys(S.logs).length) return `<div class="card"><h2>Progress</h2><p class="muted">Charts will bloom here once you’ve set up a taper and logged a few days.</p></div>`;
   const dates = rangeDates();
@@ -642,6 +869,9 @@ function vProgress() {
     </div>`;
 }
 
+/**
+ * The Settings tab: appearance, reminders, drinks, water/cutoff, backups, cloud backup, erase and an About note.
+ */
 function vSettings() {
   const st = S.settings;
   const supported = 'Notification' in window;
@@ -693,18 +923,26 @@ function vSettings() {
 }
 
 /* ---------- events ---------- */
+// Every click in the app comes through this one delegated listener. Buttons declare what they do with data-act="..."
+// (plus data-id / data-v / data-k when they need an argument). Most branches change S, then fall through to render() at the end;
+// branches that start async work or just show a dialog `return` early instead.
 document.addEventListener('click', e => {
+  // Bottom tab bar.
   const tab = e.target.closest('#tabs button');
   if (tab) { ui.openRestart = false; ui.view = tab.dataset.view; render(); window.scrollTo(0, 0); return; }
   const el = e.target.closest('[data-act]'); if (!el) return;
   const act = el.dataset.act, d = ui.date, p = S.plan;
+  // Keep a half-typed new-drink form alive across re-renders by copying its fields into ui.draft before anything redraws.
   const nm = document.getElementById('nd-name');
   if (nm) ui.draft = { name: nm.value, type: document.getElementById('nd-type').value, cont: document.getElementById('nd-cont').value,
     oz: document.getElementById('nd-oz').value, mg: document.getElementById('nd-mg').value, fav: document.getElementById('nd-fav').checked };
   const L = () => S.logs[d] || { caf: 0, decaf: 0 };
   switch (act) {
+    // --- navigation between days ---
     case 'prev': ui.date = addDays(d, -1); ui.followToday = false; break;
     case 'next': if (d < today()) { ui.date = addDays(d, 1); ui.followToday = ui.date === today(); } break;
+    // --- logging drinks. From the Drinks list (data-quick) "+" logs at the drink's CURRENT amount; the +/- in "Logged this day"
+    // adjust that exact entry at ITS amount. Only caffeinated adds (mg > 0) are timestamped for the "last caffeine" time. ---
     case 'dr+': case 'dr-': {
       const id = el.dataset.id, ent = S.logs[d]?.drinks?.[id], quick = !!el.dataset.quick;
       // From the log, adjust that exact entry (its own caffeine amount); from the drinks list, log at the drink's current amount.
@@ -712,8 +950,10 @@ document.addEventListener('click', e => {
       if (pr) { const key = setDrink(d, pr, act === 'dr+' ? 1 : -1); if (act === 'dr+' && key && pr.mg > 0) stamp(d, key); if (quick) toast(`Logged ${pr.name}`); }
       break;
     }
+    // --- water tally ---
     case 'wat+': S.water[d] = Math.min((S.water[d] || 0) + 1, 30); save(); break;
     case 'wat-': if (S.water[d] > 0) { S.water[d]--; save(); } break;
+    // --- gentle prompts: hold the taper level, ease off, dismiss ---
     case 'hold': {
       snapshot();
       const i = planIdx(today()) ?? 0, cur = target(today());
@@ -733,6 +973,7 @@ document.addEventListener('click', e => {
     case 'maintok': S.pace.maint = addDays(today(), 3); save(); break;
     case 'snooze': S.pace.snooze = addDays(today(), 2); save(); break;
     case 'nudgelater': S.settings.nudgeSnooze = addDays(today(), 3); save(); break;
+    // --- clearing a day, safety copies, symptoms ---
     case 'delday':
       if (confirm('Remove all drinks logged for this day? Your symptoms and water tally for the day stay.')) { delete S.logs[d]; save(); } else return;
       break;
@@ -745,7 +986,9 @@ document.addEventListener('click', e => {
       break;
     }
     case 'delbackups': if (confirm('Delete all safety copies from this phone?')) { try { localStorage.removeItem(BK); } catch (err) { /* ignore */ } } else return; break;
+    // A symptom severity tap (marks the check-in as done).
     case 'sev': setSym(d, { [el.dataset.k]: +el.dataset.v, done: true }); break;
+    // Save the day's check-in: also creates the day's log (so a caffeine-free day can be recorded) and tells the reminder service.
     case 'savecheck': {
       setLog(d, {});
       const ta = document.getElementById('notes');
@@ -753,12 +996,14 @@ document.addEventListener('click', e => {
       toast('Saved. Be gentle with yourself 🌿'); if (d === today()) pushDone();
       break;
     }
+    // --- Progress controls ---
     case 'range': ui.range = +el.dataset.v; break;
     case 'symsel': {
       const k = el.dataset.k;
       if (ui.symSel.has(k)) { if (ui.symSel.size > 1) ui.symSel.delete(k); } else ui.symSel.add(k);
       break;
     }
+    // --- starting, pausing, resuming and reshaping the taper ---
     case 'start': {
       const rawMg = parseInt(document.getElementById('stCans').value, 10);
       if (!(rawMg >= 5)) { toast('Enter your daily caffeine in mg (5 or more)'); return; }
@@ -770,6 +1015,7 @@ document.addEventListener('click', e => {
       snapshot(); save(); ui.view = 'today'; ui.date = today(); toast('Your taper has begun 🌸');
       break;
     }
+    // "Not sure": begin the 3-day baseline instead of entering an amount.
     case 'startunknown': {
       const days = clamp(parseInt(document.getElementById('stDays').value, 10) || 28, 2, 365);
       if (S.plan) { snapshot(); S.pastPlans.push(S.plan); S.plan = null; }
@@ -777,12 +1023,14 @@ document.addEventListener('click', e => {
       toast('Great — log what you normally drink for 3 days 🌿'); break;
     }
     case 'cancelbaseline': S.baseline = null; save(); break;
+    // Pause freezes the schedule; resume shifts the start date forward by the paused days so nothing is skipped.
     case 'pause': snapshot(); p.pausedAt = today(); save(); toast('Taper paused'); break;
     case 'resume': {
       snapshot();
       p.start = addDays(p.start, diff(p.pausedAt, today())); p.pausedAt = null;
       snapshot(); save(); toast('Welcome back'); break;
     }
+    // Re-spread the remaining days from today. Past days are untouched (frozen in `hist`).
     case 'adjust': {
       snapshot();
       const from = clamp(parseInt(document.getElementById('adjFrom').value, 10) || 0, 0, 2000);
@@ -792,11 +1040,13 @@ document.addEventListener('click', e => {
       p.targets = head.concat(gen(from, n + 1));
       snapshot(); save(); toast('Schedule adjusted'); break;
     }
+    // Nudge one upcoming day's target by 10 mg.
     case 'ed+': case 'ed-': {
       const i = +el.dataset.i;
       p.targets[i] = clamp(p.targets[i] + (act === 'ed+' ? 10 : -10), 0, 2000);
       save(); break;
     }
+    // --- managing the drink list ---
     case 'addpreset': S.settings.presets.push({ id: 'p' + Date.now().toString(36), name: 'New drink', type: 'Other', container: 'Can', oz: null, mg: 50, fav: false }); save(); break;
     case 'fav': { const pr = S.settings.presets.find(x => x.id === el.dataset.id); if (pr) { pr.fav = !isFav(pr); save(); } break; }
     case 'newdrink': ui.newOpen = !ui.newOpen; ui.draft = null; break;
@@ -823,6 +1073,7 @@ document.addEventListener('click', e => {
       if (i >= 0 && j >= 0 && j < arr.length) { [arr[i], arr[j]] = [arr[j], arr[i]]; save(); }
       break;
     }
+    // --- encrypted cloud backup, reminders and data export (async: they return early and re-render themselves) ---
     case 'cloudon': cloudOn(); return;
     case 'cloudnow': cloudBackupNow(true); return;
     case 'cloudcode': ui.showCode = !ui.showCode; break;
@@ -833,6 +1084,7 @@ document.addEventListener('click', e => {
     case 'ics': downloadICS(); return;
     case 'export': exportData(); return;
     case 'import': document.getElementById('importFile').click(); return;
+    // Erase everything: a labelled safety copy is taken first so it can be undone.
     case 'wipe':
       if (confirm('Erase all plans, logs and symptoms from this device? A safety copy is kept under Backups so you can undo it.')) {
         pushBackup('Before erase'); S = defaults(); save(); applyTheme(); ui.view = 'plan'; ui.date = today(); ui.followToday = true; syncPushDaily();
@@ -842,12 +1094,17 @@ document.addEventListener('click', e => {
   render();
 });
 
+// Live-saves the notes box as the user types (no re-render, so typing isn't interrupted).
 document.addEventListener('input', e => {
   if (e.target.id === 'notes') setSym(ui.date, { notes: e.target.value });
 });
+// Handles edits made in form fields (fires when a field is committed). Branches by element id or data attributes:
+// reminder settings, water labels, the new-drink form, drink-editor fields (data-pid/data-f), last-caffeine time,
+// cutoff, and importing a backup file.
 document.addEventListener('change', async e => {
   const t = e.target;
   if (t.id === 'remOn') {
+    // Turning reminders on asks for permission, then tries real push (works with the app closed); falls back to on-device reminders.
     if (t.checked && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
     S.settings.remind = t.checked && 'Notification' in window && Notification.permission === 'granted';
     if (t.checked && !S.settings.remind) toast('Please allow notifications to turn this on');
@@ -868,9 +1125,11 @@ document.addEventListener('change', async e => {
   } else if (t.id === 'waterUnit') {
     S.settings.waterUnit = t.value.trim() || 'glasses'; save(); toast('Saved');
   } else if (t.id === 'nd-type') {
+    // Pre-fill the mg box when the typed type is a known one (e.g. Coffee); otherwise leave it alone.
     const known = Object.keys(TYPE_MG).find(x => x.toLowerCase() === t.value.trim().toLowerCase());
     if (known !== undefined) document.getElementById('nd-mg').value = TYPE_MG[known];
   } else if (t.dataset.pid) {
+    // A field in a drink editor: data-pid names the drink, data-f the property. Takes effect for NEW logs only.
     const p = S.settings.presets.find(x => x.id === t.dataset.pid), f = t.dataset.f;
     if (p) {
       if (f === 'mg') p.mg = clamp(parseInt(t.value, 10) || 0, 0, 1000);
@@ -880,6 +1139,7 @@ document.addEventListener('change', async e => {
       save(); toast('Saved');
     }
   } else if (t.id === 'lastCaf') {
+    // Editing the time changes the newest timestamp, so removing that drink later still rolls back to the one before.
     const L = S.logs[ui.date], v = t.value || null;
     if (L && v && (L.adds || []).length) { const adds = L.adds.slice(); adds[adds.length - 1] = { ...adds[adds.length - 1], t: v }; setLog(ui.date, { lastCaf: v, adds }); }
     else setLog(ui.date, { lastCaf: v });
@@ -889,6 +1149,7 @@ document.addEventListener('change', async e => {
   } else if (t.id === 'remTime') {
     S.settings.time = t.value || '09:00'; S.settings.lastNotified = ''; save(); scheduleTrigger(); syncPushDaily(true); toast('Reminder time saved');
   } else if (t.id === 'importFile' && t.files[0]) {
+    // Import a JSON backup: a safety copy is taken first, then the file is repaired by normalize() and migrated if old.
     try {
       const data = JSON.parse(await t.files[0].text());
       if (!data || typeof data !== 'object' || !('logs' in data)) throw new Error('bad');
@@ -899,19 +1160,35 @@ document.addEventListener('change', async e => {
 });
 
 /* ---------- push reminders ---------- */
+// Real push reminders: the browser registers with its push service, the Cloudflare Worker (worker/) stores that
+// subscription plus the reminder time, and sends a silent push when it's due. sw.js shows the notification.
+// No health data is sent: only the subscription, reminder times, time zone and "logged today" dates.
+// Waits for the service worker, but gives up after 5 seconds (it never becomes ready if registration failed).
 const swReady = () => Promise.race([navigator.serviceWorker.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('no service worker')), 5000))]);
+// True when this browser can do push AND the reminder service address is configured.
 const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && !PUSH_URL.includes('REPLACE');
+// Converts the base64url VAPID public key into the byte array subscribe() needs.
 const keyBytes = b64 => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+/**
+ * POSTs JSON to the reminder/backup service. Throws on a non-2xx status (message ends with the status code); resolves to the parsed JSON.
+ */
 async function pushPost(path, body) {
   const r = await fetch(PUSH_URL + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error(path + ' ' + r.status);
   return r.json();
 }
+/**
+ * Tells the service this device's subscription, reminder time(s) and time zone.
+ */
 async function syncPush(sub) {
   await pushPost('/subscribe', { subscription: sub.toJSON(), time: S.settings.time, evening: S.settings.evening ? S.settings.eveningTime : '', tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
   S.settings.pushSynced = today(); save();
 }
+// True while enabling/disabling push, so the daily sync can't interfere mid-way.
 let pushBusy = false;
+/**
+ * Subscribes to push and registers with the service. @returns {boolean} whether it worked
+ */
 async function enablePush() {
   if (!pushSupported()) return false;
   pushBusy = true;
@@ -921,6 +1198,9 @@ async function enablePush() {
     await syncPush(sub); return true;
   } catch (e) { return false; } finally { pushBusy = false; }
 }
+/**
+ * Unsubscribes from push and removes the registration from the service.
+ */
 async function disablePush() {
   pushBusy = true;
   try {
@@ -928,6 +1208,7 @@ async function disablePush() {
     if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); await pushPost('/unsubscribe', { endpoint: ep }).catch(() => {}); }
   } catch (e) { /* ignore */ } finally { pushBusy = false; }
 }
+// Prevents overlapping "I logged something today" pings.
 let touchBusy = false;
 async function pushTouch() { // first log of the day: the server then skips the main reminder
   if (touchBusy || !S.settings.push || !pushSupported() || S.settings.touchedPing === today()) return;
@@ -958,11 +1239,19 @@ async function syncPushDaily(force) {
 // The service stores only ciphertext under an ID derived from the same code, so it can't read anything.
 function getCloud() { try { return JSON.parse(localStorage.getItem(CLOUD_KEY)); } catch (e) { return null; } }
 function setCloud(c) { try { localStorage.setItem(CLOUD_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ } }
+// Crockford base32 alphabet (no I, L, O, U) used for the recovery code, so it's easy to read and type.
 const CROCK = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+// True when there is anything worth backing up (never upload an empty state over a good copy).
 const hasData = () => Object.keys(S.logs).length > 0 || !!S.plan || !!S.baseline;
+// Bytes -> base64, in chunks (spreading a large array into fromCharCode would overflow the call stack).
 const b64 = buf => { const u = new Uint8Array(buf); let out = ''; for (let i = 0; i < u.length; i += 0x8000) out += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(out); };
+// Bytes -> URL-safe base64 without padding (used for the backup ID).
 const b64url = buf => b64(buf).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// base64 -> bytes.
 const unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+/**
+ * Generates a recovery code: 25 random base32 characters (125 bits) as XXXXX-XXXXX-XXXXX-XXXXX-XXXXX.
+ */
 function newCode() {
   const r = crypto.getRandomValues(new Uint8Array(25)); let c = '';
   for (let i = 0; i < 25; i++) { c += CROCK[r[i] & 31]; if (i % 5 === 4 && i < 24) c += '-'; }
@@ -972,6 +1261,11 @@ function normCode(t) { // forgiving about case, dashes, spaces and look-alike le
   const c = String(t || '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1').replace(/[^0-9A-Z]/g, '');
   return c.length === 25 && [...c].every(ch => CROCK.includes(ch)) ? c : null;
 }
+/**
+ * Derives two independent values from the recovery code with HKDF: the backup ID (sent to the service) and the AES-GCM key
+ * (never leaves the device). The service therefore can't read what it stores.
+ * @returns {Promise<{id:string, key:CryptoKey}>}
+ */
 async function cloudKeys(code) {
   const norm = normCode(code); if (!norm) throw new Error('bad code');
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(norm), 'HKDF', false, ['deriveBits', 'deriveKey']);
@@ -980,16 +1274,25 @@ async function cloudKeys(code) {
   const key = await crypto.subtle.deriveKey(p('gentle-taper key'), base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
   return { id, key };
 }
+/**
+ * Encrypts the whole state S with AES-GCM and a fresh random IV. @returns {string} JSON { v, iv, ct } (base64)
+ */
 async function encryptState(key) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(S)));
   return JSON.stringify({ v: 1, iv: b64(iv), ct: b64(ct) });
 }
+/**
+ * Reverses encryptState. Throws if the key is wrong or the data was tampered with (GCM authenticates it).
+ */
 async function decryptState(key, blob) {
   const { iv, ct } = JSON.parse(blob);
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
   return JSON.parse(new TextDecoder().decode(plain));
 }
+/**
+ * Encrypts and uploads the current state. `manual` is true when the user tapped the button (then failures are reported). Skips an empty state.
+ */
 async function cloudBackupNow(manual) {
   const c = getCloud();
   if (!c || cloudBusy) return false;
@@ -1007,22 +1310,35 @@ async function cloudBackupNow(manual) {
     return false;
   } finally { cloudBusy = false; }
 }
+// Called by save(): schedules a background upload ~90 seconds after the last change, at most every 30 minutes.
 function cloudDirty() { // after any change, back up shortly (at most every 30 minutes)
   if (!getCloud()) return;
   cloudPending = true; clearTimeout(cloudT);
   cloudT = setTimeout(() => { const c = getCloud(); if (c && Date.now() - (c.last || 0) > 30 * 60 * 1000) cloudBackupNow(false); }, 90000);
 }
+// Makes sure there's at least one upload per day, even if nothing changed.
 function cloudDaily() { const c = getCloud(); if (c && c.lastDay !== today() && hasData()) cloudBackupNow(false); }
+/**
+ * Turns cloud backup on: makes a recovery code, shows it, and does the first upload.
+ */
 async function cloudOn() {
   setCloud({ code: newCode(), last: 0, lastDay: '' }); ui.showCode = true; render();
   await cloudBackupNow(true);
 }
+/**
+ * Deletes the cloud copy and forgets the recovery code on this device (local data stays).
+ */
 async function cloudOff() {
   const c = getCloud();
   try { if (c) await pushPost('/backup/delete', { id: (await cloudKeys(c.code)).id }); } catch (e) { toast('Couldn’t reach the service, but backups are now off here'); }
   try { localStorage.removeItem(CLOUD_KEY); } catch (e) { /* ignore */ }
   ui.showCode = false; render(); toast('Cloud backup turned off');
 }
+/**
+ * Restores from the cloud: fetches version `gen` (0 latest, 1 previous, 2 older), decrypts it, confirms with the user,
+ * takes a safety copy first, then replaces S. Reminders are switched off because each device needs its own push registration.
+ * A wrong code gives "not found" or fails to decrypt, and leaves the current data untouched.
+ */
 async function cloudRestore(gen) {
   const typed = document.getElementById('cloudCodeIn'), code = (typed && typed.value.trim()) || (getCloud() || {}).code;
   if (!normCode(code)) return toast('That recovery code doesn’t look right — it has 25 letters and numbers');
@@ -1043,6 +1359,9 @@ async function cloudRestore(gen) {
   setCloud({ code: normCode(code).replace(/(.{5})(?=.)/g, '$1-'), last: Date.now(), lastDay: today() });
   syncPushDaily(); render(); toast('Restored from the cloud 🌿');
 }
+/**
+ * The Settings card for cloud backup: either "turn on / restore on a new phone" or the on-state controls.
+ */
 function cloudCard() {
   const c = getCloud();
   const note = '<p class="muted" style="margin-top:-4px">Your data is encrypted on your phone with a recovery code only you hold, then stored in the cloud. Nobody else — including me — can read it. If you lose both your phone and the code, the backup can’t be opened.</p>';
@@ -1065,11 +1384,18 @@ function cloudCard() {
 }
 
 /* ---------- reminders ---------- */
+// On-device fallback reminders, used when push isn't available. They only fire while the app is open or recently opened.
+/**
+ * Shows a notification via the service worker (required on mobile); falls back to the page API.
+ */
 function notify(title, body) {
   const opts = { body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'taper-daily' };
   const fallback = () => { try { new Notification(title, opts); } catch (e) { /* ignore */ } };
   if ('serviceWorker' in navigator) swReady().then(r => r.showNotification(title, opts)).catch(fallback); else fallback();
 }
+/**
+ * The "Send a test" button: a real push if push is on, otherwise a local notification.
+ */
 async function testNotif() {
   if (!('Notification' in window)) return toast('Notifications aren’t supported here');
   if (Notification.permission === 'default') await Notification.requestPermission();
@@ -1082,6 +1408,9 @@ async function testNotif() {
   }
   notify('Gentle Taper', 'A soft little reminder to log your drinks and how you feel 🌿');
 }
+/**
+ * Local reminder check (runs every 30 s and on open): once per day after the chosen time, unless the user has already logged something.
+ */
 function checkReminder() {
   const st = S.settings;
   if (!st.remind || st.push || !('Notification' in window) || Notification.permission !== 'granted') return;
@@ -1107,6 +1436,9 @@ async function scheduleTrigger() {
     }
   } catch (e) { /* ignore */ }
 }
+/**
+ * Downloads a repeating daily calendar event, a reminder that works even if notifications don't.
+ */
 function downloadICS() {
   const [h, m] = S.settings.time.split(':').map(Number);
   const s = new Date(), stamp = `${fmt(s).replace(/-/g, '')}T${pad(h)}${pad(m)}00`, utc = s.toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
@@ -1117,6 +1449,9 @@ function downloadICS() {
     'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
   saveBlob(new Blob([ics], { type: 'text/calendar' }), 'gentle-taper-reminder.ics');
 }
+/**
+ * Exports S as a JSON file: through the phone's share sheet when available (save to Files/Drive), otherwise a normal download.
+ */
 async function exportData() {
   const json = JSON.stringify(S, null, 2), name = `gentle-taper-backup-${today()}.json`;
   const done = () => { S.settings.lastExport = today(); save(); render(); toast('Backup exported'); };
@@ -1126,6 +1461,9 @@ async function exportData() {
   } catch (e) { if (e && e.name === 'AbortError') return; }
   saveBlob(new Blob([json], { type: 'application/json' }), name); done();
 }
+/**
+ * Triggers a browser download of `blob` as `name`.
+ */
 function saveBlob(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;
@@ -1134,16 +1472,23 @@ function saveBlob(blob, name) {
 }
 
 /* ---------- theme ---------- */
+/**
+ * Applies light/dark (or follows the phone) by setting data-theme on <html> and updating the browser's theme-color.
+ */
 function applyTheme() {
   const pref = S.settings.theme || 'auto';
   const dark = pref === 'dark' || (pref === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = dark ? '#1c2a21' : '#cfe5d3';
 }
+// Follow the phone's light/dark setting live when the user chose "Match phone".
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyTheme(); render(); });
+// Remember whether the "More drinks" section is open so re-renders don't collapse it.
 document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) ui.moreOpen = e.target.open; }, true);
 
 /* ---------- boot ---------- */
+// Start-up order: theme + decoration, daily safety copy, pick the first tab, handle a home-screen shortcut, draw,
+// then check reminders/push/cloud. Function declarations below are hoisted, so they're callable from here.
 applyTheme();
 applyDecor();
 pushBackup();
@@ -1152,6 +1497,9 @@ handleLaunchParams();
 render();
 checkReminder(); scheduleTrigger(); syncPushDaily(); setTimeout(cloudDaily, 4000);
 // Home-screen shortcuts open the app with ?quick=<drink>; log one and tidy the URL.
+/**
+ * Home-screen shortcut support: opening the app as ?quick=<drink id> logs one of that drink (and tidies the URL).
+ */
 function handleLaunchParams() {
   const quick = new URLSearchParams(location.search).get('quick');
   if (!quick) return;
@@ -1163,12 +1511,18 @@ function handleLaunchParams() {
   ui.date = d; ui.followToday = true; if (S.plan || S.baseline) ui.view = 'today';
 }
 // If the app was left open past midnight, move "today" forward (unless the user is looking at an older day on purpose).
+/**
+ * Runs periodically: takes the daily safety copy and, if the app stayed open past midnight, moves "today" forward.
+ */
 function rollover() { pushBackup(); if (ui.followToday && ui.date !== today()) { ui.date = today(); render(); } }
+// Housekeeping tick every 30 seconds.
 setInterval(() => { checkReminder(); rollover(); }, 30000);
+// When the app comes back to the foreground: roll the day over and re-sync. When it goes to the background: flush any pending cloud backup.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { rollover(); checkReminder(); syncPushDaily(); cloudDaily(); }
   else if (cloudPending) { const c = getCloud(); if (c && Date.now() - (c.last || 0) > 5 * 60 * 1000) cloudBackupNow(false); }
 });
+// Register the service worker (offline cache + push). Optional: the app works without it.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is optional */ });
 }

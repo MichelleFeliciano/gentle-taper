@@ -7,6 +7,7 @@
 //     code only the user holds) and uploads the ciphertext under an ID derived from that same code.
 //     This service never sees the code, the key, or readable data. The last 3 versions are kept.
 
+// Browser origins allowed to call this service (the live app, and a local test server). Anything else gets 403.
 const ORIGINS = ['https://michellefeliciano.github.io', 'http://localhost:8123'];
 // Only real browser push services are allowed, so this can't be used to make the Worker call arbitrary URLs.
 const PUSH_HOSTS = [/(^|\.)fcm\.googleapis\.com$/, /(^|\.)push\.services\.mozilla\.com$/, /(^|\.)push\.apple\.com$/, /(^|\.)notify\.windows\.com$/];
@@ -17,24 +18,33 @@ const BACKUP_MAX = 1500000;         // characters of ciphertext per backup
 const BACKUP_TTL = 400 * 24 * 3600; // a backup that is never refreshed expires after ~13 months
 const GEN_GAP_MS = 20 * 3600 * 1000; // rotate to a new "previous version" at most once per ~day
 
+// Small helpers: text encoder, and base64url (used for the VAPID signature).
 const enc = new TextEncoder();
 const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
+// KV key for a subscription: a SHA-256 hash of its endpoint, so the raw push address is never used as a key.
 async function keyId(endpoint) {
   const h = await crypto.subtle.digest('SHA-256', enc.encode(endpoint));
   return 's:' + [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
+// A push address must be https and on a real browser push service. Without this the Worker could be tricked into calling arbitrary URLs.
 const validEndpoint = e => {
   try { const u = new URL(e); return u.protocol === 'https:' && e.length < 1000 && PUSH_HOSTS.some(r => r.test(u.hostname)); } catch { return false; }
 };
+// True for a real IANA time zone name such as 'America/New_York'.
 const validTz = tz => { try { new Intl.DateTimeFormat('en', { timeZone: tz }); return typeof tz === 'string' && tz.length < 64; } catch { return false; } };
+// 'HH:MM', 24-hour.
 const validTime = t => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+// A backup ID is 43 base64url characters (a 256-bit hash made on the phone from the recovery code).
 const validBackupId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{43}$/.test(id);
+// 'YYYY-MM-DD'.
 const validDate = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d);
 
+// CORS headers so the browser lets the app (on another origin) read responses. The caller's origin is echoed back, never '*'.
 function corsHeaders(origin) {
   return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400', Vary: 'Origin' };
 }
+// JSON response helper (adds CORS headers when an allowed origin is given).
 const json = (obj, status, origin) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', ...(origin ? corsHeaders(origin) : {}) } });
 
 // Current local date (YYYY-MM-DD) and minutes-since-midnight in a timezone.
@@ -43,6 +53,7 @@ function localParts(tz, now = new Date()) {
     .formatToParts(now).map(x => [x.type, x.value]));
   return { date: `${p.year}-${p.month}-${p.day}`, minutes: +p.hour * 60 + +p.minute };
 }
+// 'HH:MM' -> minutes since midnight.
 const toMin = hhmm => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
 // Which reminder, if any, is due right now? Pure, so it's easy to reason about.
 //  main: skipped once the user has logged anything today (touched) or saved the check-in (done)
@@ -56,6 +67,8 @@ export function dueKind(rec, now = new Date()) {
   return null;
 }
 
+// Builds the VAPID `Authorization` header: a short-lived ES256-signed JWT proving this service owns the app's public key.
+// The private key is a Worker secret (VAPID_PRIVATE_JWK), never in the repository.
 async function vapidAuth(env, endpoint) {
   const key = await crypto.subtle.importKey('jwk', JSON.parse(env.VAPID_PRIVATE_JWK), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
   const head = b64u(enc.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
@@ -64,10 +77,13 @@ async function vapidAuth(env, endpoint) {
   return `vapid t=${head}.${body}.${b64u(sig)}, k=${env.VAPID_PUBLIC}`;
 }
 
+// Sends one empty push to a subscription. The service worker (sw.js) supplies the notification text.
 async function sendPush(env, endpoint) {
   return fetch(endpoint, { method: 'POST', headers: { Authorization: await vapidAuth(env, endpoint), TTL: '3600', Urgency: 'normal', 'Content-Length': '0' } });
 }
 
+// Runs every 5 minutes (see wrangler.toml): for each subscription, decide with dueKind() whether a reminder is due and send it.
+// A 404/410 reply means the phone unsubscribed, so the record is deleted. Only 's:' keys are scanned (backups use 'b:').
 async function runCron(env, now = new Date()) {
   let cursor, sent = 0, removed = 0;
   do {
@@ -88,6 +104,12 @@ async function runCron(env, now = new Date()) {
   return { sent, removed };
 }
 
+// HTTP API, all POST with JSON:
+//   /subscribe   register a phone + reminder time(s) + time zone        /unsubscribe  remove it
+//   /touch       the user logged something today (skip the main reminder)   /done  the check-in is saved (skip all)
+//   /test        send a test push now (at most once a minute)
+//   /backup/put | /backup/get | /backup/delete   encrypted cloud backup, 3 versions kept
+// Requests must come from an allowed origin. /health is open (used for checks).
 async function handle(req, env) {
   const url = new URL(req.url), origin = req.headers.get('Origin');
   if (url.pathname === '/health') return json({ ok: true }, 200);
@@ -161,6 +183,7 @@ async function handle(req, env) {
   return json({ error: 'not found' }, 404, origin);
 }
 
+// Entry points: `fetch` serves the API above; `scheduled` is the 5-minute cron.
 export default {
   fetch: (req, env) => handle(req, env).catch(() => { const o = req.headers.get('Origin'); return json({ error: 'server error' }, 500, ORIGINS.includes(o) ? o : undefined); }),
   scheduled: (event, env, ctx) => ctx.waitUntil(runCron(env, new Date(event.scheduledTime))),

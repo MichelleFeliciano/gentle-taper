@@ -1,17 +1,29 @@
+# Cloudflare Worker configuration for Gentle Taper's reminder + backup service (code: src/index.js).
+
+# The Worker's name; it becomes part of its public address (<name>.<account>.workers.dev).
 name = "gentle-taper-push"
+# Entry file containing the `fetch` (HTTP API) and `scheduled` (cron) handlers.
 main = "src/index.js"
+# Pins the Workers runtime behavior to this date so future platform changes can't alter it.
 compatibility_date = "2025-01-01"
+# No extra per-version preview URLs: the service should only be reachable at its one address.
 preview_urls = false
 
-# Every 5 minutes: send reminders that are due (KV list calls stay within the free daily limit).
+# Cron trigger: every 5 minutes, send the reminders that are due. (Keeps KV "list" calls
+# comfortably inside the free daily limit while still being timely.)
 [triggers]
 crons = ["*/5 * * * *"]
 
+# Plain (non-secret) settings. The matching PRIVATE key is a Worker *secret* (VAPID_PRIVATE_JWK),
+# set with `wrangler secret put` and never stored in this repository.
 [vars]
+# Public half of the VAPID key pair; the app embeds the same value (PUSH_KEY in app.js).
 VAPID_PUBLIC = "BPHoUIzOrOvN_ZCYwSIz0MtfsQOAU7RaiAPcQBT4KvjTNUony1ux9FJ4oqvqM7JTqxvF-jakowvk4C1Eg-61KXw"
+# Contact URL included in every push so push services can identify the sender.
 VAPID_SUBJECT = "https://michellefeliciano.github.io/gentle-taper/"
 
-# KV namespace id is filled in by `wrangler kv namespace create SUBS` (see worker/README.md).
+# Key-value storage. Subscriptions are stored under "s:<hash>" keys and encrypted backups under
+# "b:<id>:<version>" keys. The id is created by `wrangler kv namespace create SUBS` (see worker/README.md).
 [[kv_namespaces]]
 binding = "SUBS"
 id = "24cc8fe1e80641b9be34e880da4ac64d"

@@ -1,3 +1,16 @@
+/*
+   Gentle Taper — styles. A soft botanical look (sage / mint / lavender) that stays quick to use.
+   
+   THEMING   Every color is a CSS variable defined below. :root is the light theme; :root[data-theme="dark"] overrides the
+             same names for dark mode (app.js sets data-theme on <html>). Component rules below only use variables.
+   LAYOUT    Phone-first: one column up to 480px, a fixed bottom tab bar, decorative vines on both edges.
+   TEXT      Font sizes are in rem so they follow the phone's text-size setting.
+   ORDER     Base -> layout -> shared components -> feature-specific rules (drinks, log, prompts, backup) -> accessibility.
+   
+   DESIGN TOKENS (light). Roles:  --ink / --ink-soft text  ·  --paper / --cream / --card surfaces  ·  --line borders
+     --sage*  main green  ·  --rose*  accent green (buttons, target number)  ·  --lav*  lavender accents and prompts
+     --*-bg   soft tinted backgrounds  ·  --warn / --mod  severity colors  ·  --c-* / --s0-5  chart colors
+ */
 :root {
   --blush: #dff0e6;
   --rose: #3b8062;
@@ -27,6 +40,7 @@
   --mod-ink: #a5573a;
 }
 
+/* Dark theme: same variable names, darker values. `color-scheme: dark` also darkens built-in form controls. */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --blush: #26382d; --rose: #5fae8c; --rose-deep: #9fdcbc; --sage: #7fa57a; --sage-deep: #a9cfa3;
@@ -42,8 +56,10 @@
   --mod-ink: #f0b79b;
 }
 
+/* Base: predictable sizing, no tap flash, and the page background. */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html { background: var(--paper); }
+/* Page: soft gradients behind everything; bottom padding leaves room for the fixed tab bar and the iPhone home-indicator area. */
 body {
   margin: 0;
   font-family: var(--font-body);
@@ -64,9 +80,11 @@ body {
   background-image: var(--vine); background-size: 46px 307px; background-repeat: repeat-y;
   opacity: var(--vine-op);
 }
+/* Left vine is the tile as drawn; the right one is mirrored and offset so the two never line up exactly. */
 .vine-l { left: -6px; }
 .vine-r { right: -6px; transform: scaleX(-1); background-position: 0 150px; }
 
+/* Header: vine strip, app title and the "Day N of M" subtitle. */
 header.top {
   position: relative; z-index: 1; max-width: 480px; margin: 0 auto;
   padding: 0 30px 6px; text-align: center;
@@ -75,8 +93,10 @@ header.top {
 header.top h1 { font-family: var(--font-head); font-weight: 600; font-size: 1.75rem; margin: 2px 0 0; color: var(--sage-deep); letter-spacing: .2px; }
 header.top p { margin: 2px 0 0; color: var(--ink-soft); font-size: 0.875rem; min-height: 20px; }
 
+/* Main content column, kept above the vine borders (z-index) and narrow enough to feel like a phone screen on desktop. */
 main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding: 10px 28px 20px; }
 
+/* Cards: the container for every section. Variants: .note (green prompt), .alert (lavender prompt), .hero (target). */
 .card {
   background: var(--card);
   border: 1.5px solid var(--line);
@@ -94,6 +114,7 @@ main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding
 .datenav { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }
 .datenav .d { font-family: var(--font-head); font-size: 1.25rem; text-align: center; flex: 1; }
 .datenav .d small { display: block; font-family: var(--font-body); font-size: 0.8125rem; color: var(--ink-soft); }
+/* Round icon buttons (previous/next day, minus/plus, remove). 44px minimum touch target. */
 .round {
   width: 44px; height: 44px; border-radius: 50%; border: 1.5px solid var(--line);
   background: var(--cream); color: var(--ink); font-size: 1.375rem; line-height: 1; cursor: pointer;
@@ -106,6 +127,7 @@ main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding
 .hero { text-align: center; background: linear-gradient(160deg, var(--hero1), var(--hero2)); }
 .hero .big { font-family: var(--font-head); font-size: 4rem; line-height: 1; color: var(--rose-deep); margin: 4px 0; }
 .hero .lbl { color: var(--ink-soft); font-size: 0.875rem; }
+/* Short status line (e.g. "Under target"); .over shifts to lavender rather than a red warning, to keep the tone gentle. */
 .status { margin-top: 8px; font-weight: 600; color: var(--sage-deep); }
 .status.over { color: var(--lav-deep); }
 
@@ -134,6 +156,7 @@ main { position: relative; z-index: 1; max-width: 480px; margin: 0 auto; padding
 .seg button.on[data-v="2"] { background: var(--mod-bg); border-color: var(--mod-bd); color: var(--mod-ink); }
 .seg button.on[data-v="3"] { background: var(--lav-bg2); border-color: var(--lav-deep); color: var(--lav-ink); }
 
+/* Form fields share one look. (Text inputs and selects are styled further down.) */
 textarea, input[type=number], input[type=time], input[type=date] {
   width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink);
   border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 12px;
@@ -141,6 +164,7 @@ textarea, input[type=number], input[type=time], input[type=date] {
 textarea { min-height: 76px; resize: vertical; }
 label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--ink-soft); margin: 10px 0 4px; }
 
+/* Buttons: pill shaped, 48px tall. Variants: .rose (primary), .ghost (outlined), .danger, .block (full width), .sm (compact). */
 .btn {
   font-family: var(--font-body); font-weight: 700; font-size: 1rem; border-radius: 999px; padding: 13px 20px;
   border: 1.5px solid var(--sage); background: var(--sage); color: var(--on-sage); cursor: pointer; min-height: 48px;
@@ -151,6 +175,7 @@ label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--in
 .btn.block { width: 100%; }
 .btn:active { transform: scale(.98); }
 .btn:disabled { opacity: .5; }
+/* Rows of buttons that wrap on narrow screens. */
 .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .btns .btn { flex: 1 1 140px; }
 
@@ -169,6 +194,7 @@ label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--in
 .legend i { display: inline-block; width: 16px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
 .legend i.dash { border-top-style: dashed; }
 
+/* Highlight tiles on the Progress tab (two columns). */
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .stat { background: var(--cream); border: 1.5px solid var(--line); border-radius: 18px; padding: 10px 12px; }
 .stat b { display: block; font-family: var(--font-head); font-size: 1.625rem; color: var(--sage-deep); font-weight: 500; }
@@ -183,19 +209,23 @@ label.f { display: block; font-size: 0.875rem; font-weight: 600; color: var(--in
 .sched .stepper .n { font-size: 1.5rem; min-width: 28px; }
 .sched .dl small { color: var(--ink-soft); display: block; font-size: 0.75rem; }
 
+/* Collapsible cards (Plan tab): the +/- marker replaces the browser's default triangle. */
 details.card summary { cursor: pointer; font-family: var(--font-head); font-size: 1.125rem; list-style: none; min-height: 28px; }
 details.card summary::-webkit-details-marker { display: none; }
 details.card summary::after { content: "＋"; float: right; color: var(--sage-deep); }
 details.card[open] summary::after { content: "－"; }
 details.card[open] summary { margin-bottom: 8px; }
 
+/* Small status badge (Active / Paused / On). */
 .pill { display: inline-block; padding: 4px 12px; border-radius: 999px; background: var(--lav); color: var(--lav-ink); font-size: 0.8125rem; font-weight: 700; }
 .pill.sage { background: var(--pill-sage); color: var(--sage-deep); }
 
+/* Label + toggle row. */
 .switch { display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
 .switch input { width: 52px; height: 30px; accent-color: var(--sage-deep); }
 
 /* nav */
+/* Fixed bottom tab bar with a blurred background. */
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; justify-content: center; gap: 4px;
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
@@ -209,6 +239,7 @@ details.card[open] summary { margin-bottom: 8px; }
 .tabs svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tabs button.on { color: var(--sage-deep); background: var(--sage-bg); }
 
+/* Pop-up message; hidden by default, shown by adding .show (see toast() in app.js). */
 #toast {
   position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
   background: var(--toast-bg); color: #fff; padding: 10px 18px; border-radius: 999px; font-weight: 600; font-size: 0.875rem;
@@ -216,9 +247,12 @@ details.card[open] summary { margin-bottom: 8px; }
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* Wider screens: slightly wider vines. */
 @media (min-width: 560px) { .vine { width: 60px; } }
+/* Respect the "reduce motion" accessibility setting. */
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
+/* Drinks card: the day's caffeine total versus target, and the drink-editor rows. */
 .totals { margin-top: 10px; padding: 10px 12px; background: var(--lav-bg); border-radius: 16px; text-align: center; }
 .totals b { font-family: var(--font-head); font-size: 1.375rem; color: var(--lav-deep); font-weight: 500; }
 .preset { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
@@ -226,6 +260,7 @@ details.card[open] summary { margin-bottom: 8px; }
 .preset .pmg { width: 74px; flex: none; }
 .preset .round { width: 40px; height: 40px; flex: none; color: var(--rose-deep); }
 
+/* Selects and free-text inputs (the number/time inputs are styled above). */
 select {
   width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink);
   border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 10px; min-height: 46px;
@@ -234,22 +269,28 @@ input[type=text] {
   width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink);
   border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 12px;
 }
+/* Favorite star (.on = favorite) and the edit pencil. */
 .star { border: 0; background: none; font-size: 1.375rem; line-height: 1; color: var(--line); padding: 2px 8px 2px 0; cursor: pointer; min-height: 36px; vertical-align: middle; }
 .star.on { color: #e0a73c; }
+/* Drink editor block (shown inline on Today and in Settings) and the new-drink form. */
 .dedit { padding: 8px 0; }
 .dedit + .dedit { border-top: 1.5px dashed var(--line); }
 .preset select { min-width: 0; flex: 1; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .newdrink { margin-top: 8px; padding: 4px 12px 12px; background: var(--lav-bg); border-radius: 18px; }
+/* "More drinks" collapsible inside the Drinks card. */
 details.more { margin-top: 4px; border-top: 1.5px dashed var(--line); }
 details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep); font-weight: 600; min-height: 44px; }
 .nm1 { display: inline-flex; align-items: center; }
 
+/* Dark mode: dark text on the lighter green primary button for contrast. */
 :root[data-theme="dark"] .btn.rose { color: #10261b; }
 
+/* Prompt cards: .note is green (celebrations, tips), .alert is lavender (gentle "ease off" suggestions). */
 .card.note { background: var(--sage-bg); border-color: var(--sage); }
 .card.alert { background: var(--lav-bg); border-color: var(--lav-deep); }
 .card.alert h2 { color: var(--lav-ink); }
+/* "Logged this day": one row per logged drink (name + total on the left, count stepper on the right). */
 .lrow { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
 .lrow + .lrow { border-top: 1.5px dashed var(--line); }
 .lrow .lname { flex: 1 1 140px; min-width: 0; }
@@ -258,17 +299,23 @@ details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep)
 .lrow .pmg { width: 70px; flex: none; padding: 8px 8px; }
 .lrow .stepper .round, .lrow > .round { width: 40px; height: 40px; font-size: 1.25rem; flex: none; }
 .lrow .stepper .n { font-size: 1.375rem; min-width: 24px; }
+/* "Last caffeine at" row. */
 .lastcaf { border-top: 1.5px dashed var(--line); padding: 10px 0 2px; margin-top: 6px; }
+/* Milestone list on the Progress tab. */
 .ms { padding: 6px 0; }
 .ms.done { color: var(--sage-deep); font-weight: 600; }
 
+/* Accessibility: a clear outline when navigating by keyboard or switch control. */
 :focus-visible { outline: 3px solid var(--lav-deep); outline-offset: 2px; border-radius: 10px; }
+/* Weekly summary bullet list. */
 .wk { margin: 0; padding-left: 18px; }
 .wk li { margin: 4px 0; }
 
+/* Cloud-backup recovery code box (monospace, easy to select and copy). */
 .codebox { margin: 10px 0 4px; padding: 12px; border: 2px dashed var(--sage); border-radius: 18px; background: var(--sage-bg); }
 .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; font-weight: 700; letter-spacing: 0; white-space: nowrap; text-align: center; user-select: all; -webkit-user-select: all; }
 
+/* Edit pencil, drink-editor panel and the compact button size. */
 .edit { border: 0; background: none; font-size: 1.05rem; color: var(--ink-soft); padding: 2px 8px; cursor: pointer; min-height: 36px; }
 .edit[aria-pressed="true"] { color: var(--lav-deep); }
 .editwrap { background: var(--lav-bg); border-radius: 18px; padding: 4px 12px 10px; margin: 4px 0 8px; }

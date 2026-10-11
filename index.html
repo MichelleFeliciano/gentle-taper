@@ -4,33 +4,42 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gentle Taper</title>
+<!-- Colors the phone's status/address bar. app.js updates this when the theme changes. -->
 <meta name="theme-color" content="#cfe5d3">
 <meta name="description" content="A gentle, private caffeine taper tracker.">
+<!-- Runs before the page paints so a dark-mode user never sees a flash of the light theme. Mirrors applyTheme() in app.js. -->
 <script>try{var s=JSON.parse(localStorage.getItem('gentle-taper-v1')),p=s&&s.settings&&s.settings.theme||'auto';document.documentElement.dataset.theme=p==='dark'||(p==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light'}catch(e){}</script>
+<!-- PWA: lets the site be installed to the home screen (name, icons, shortcuts: see manifest.webmanifest). -->
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
+<!-- iPhone/Android home-screen app settings: open full-screen with the app name. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Gentle Taper">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
+<!-- Fonts: Fraunces (headings) and Quicksand (text). The app still works with fallback fonts if offline. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<!-- Decorative vine borders on the left and right edges (filled in from app.js; purely visual, hidden from screen readers). -->
 <div class="vine vine-l" aria-hidden="true"></div>
 <div class="vine vine-r" aria-hidden="true"></div>
 
+<!-- Header: vine strip, app title, and the subtitle app.js fills in ("Day 3 of 28", etc.). -->
 <header class="top">
   <div class="top-vine" aria-hidden="true"></div>
   <h1 id="title">Gentle Taper</h1>
   <p id="subtitle"></p>
 </header>
 
+<!-- The active tab is drawn into this element by render() in app.js. -->
 <main id="app"></main>
 
+<!-- Bottom tab bar. app.js switches tabs from each button's data-view. -->
 <nav class="tabs" id="tabs" aria-label="Main">
   <button data-view="today" aria-label="Today">
     <svg viewBox="0 0 24 24"><path d="M5 19c0-8 5-13 14-14 0 9-5 14-14 14Z"/><path d="M5 19c3-4 6-7 10-9"/></svg><span>Today</span>
@@ -46,7 +55,9 @@
   </button>
 </nav>
 
+<!-- Pop-up message area (a live region, so screen readers announce it). -->
 <div id="toast" role="status"></div>
+<!-- All app logic. Placed at the end so the elements above exist when it runs. -->
 <script src="app.js"></script>
 </body>
 </html>
