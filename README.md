@@ -14,8 +14,12 @@ no tracking: your data lives on your phone.
 | **Progress** | Caffeine vs. target chart, symptom trends, weekly summary, streaks, milestones. |
 | **Gentle prompts** | Suggests holding or pausing when symptoms are rough, handles a "bumpy day", celebrates milestones, notices if caffeine creeps back after finishing. |
 | **Reminders** | Real push notifications at a chosen time (skipped once you've logged), optional evening follow-up, on-device fallback, calendar file. |
-| **Backups** | Daily on-device safety copies, JSON export/import, and an encrypted cloud backup restored with a recovery code. |
-| **Look** | Botanical vines, soft sage/mint/lavender palette, light and dark themes, large-text and screen-reader friendly. |
+| **Your data** | One-file export (with a format and app version inside), an import that shows what it will add *before* saving and then merges without overwriting, daily on-device safety copies, an encrypted cloud backup restored with a recovery code, a last-backup date and a nudge, a storage warning. |
+| **Mistakes** | Undo / Redo, a History list, an Undo pop-up after every delete, Recently deleted (30 days) with Restore, confirmation before anything permanent. |
+| **Finding things** | Search across everything, a Help page, a welcome card, a Settings check (what is on/off), empty screens with a next step. |
+| **Updates** | Version number and date in Settings, an "Update now" banner that appears by itself, What's new for every version. |
+| **Privacy** | Optional PIN or password lock (a screen lock; see Privacy below). |
+| **Look** | Botanical vines, soft sage/mint/lavender palette, light/dark (follows the phone, or choose), three text sizes, large tap targets, works offline and says when it is offline. |
 
 ## Project layout
 
@@ -23,7 +27,10 @@ no tracking: your data lives on your phone.
 index.html            page shell (head setup, tab bar, mount points)
 styles.css            all styling; colors are CSS variables with a light and a dark set
 app.js                the whole app: state, views, events, push, cloud backup (heavily commented)
-sw.js                 service worker: offline cache + push notifications
+sw.js                 service worker: offline cache, update flow (new version waits, then "Update now"), push notifications
+CHANGELOG.md          dated list of changes per version (kept in step with CHANGES in app.js by a test)
+tests/                automated tests (node:test + jsdom) that run the real app; `npm test`
+.github/workflows/    CI: run the tests, deploy to GitHub Pages only if they pass
 manifest.webmanifest  install info (name, icons, home-screen shortcuts). JSON can't hold comments, so see below.
 icons/                app icons (192 and 512 px)
 worker/               Cloudflare Worker: push reminders + encrypted backup storage (see worker/README.md)
@@ -58,6 +65,10 @@ worker/               Cloudflare Worker: push reminders + encrypted backup stora
 The recovery code is 25 random characters (125 bits). Lose both the phone and the code and the backup cannot be opened.
 The reminder service only accepts calls from the app's own origin and only contacts real browser push services.
 
+The lock is a screen lock only: it hides the app from someone holding an unlocked phone. Only a salted PBKDF2 hash of the
+PIN/password is stored. It does not encrypt the data kept in the browser, and forgetting it means erasing this phone's copy
+(then restoring from an export or the cloud recovery code).
+
 ## Run it locally
 
 ```bash
@@ -66,10 +77,23 @@ python -m http.server 8123      # then open http://localhost:8123
 
 Service workers cache aggressively: while developing, unregister the worker (DevTools → Application) or bump `CACHE` in `sw.js`.
 
+## Tests
+
+```bash
+npm install     # once: installs jsdom, which the tests use to run the real page
+npm test
+```
+
+The tests load `index.html` and `app.js` into a simulated browser and click real buttons. They cover export/import and merging,
+undo/redo/trash, search, help, the lock, update banners, offline/storage notices, migrations from old data, and a sweep of every
+screen in many situations. Release checks make sure `VERSION` (app.js), the cache name (sw.js) and `CHANGELOG.md` agree.
+
 ## Deploy
 
-* **App:** static files, hosted on GitHub Pages from the `main` branch. Push to publish; installed copies update the next time
-  they're opened (the service worker refreshes its cache in the background). **Bump `CACHE` in `sw.js` when you change files.**
+* **App:** static files on GitHub Pages, published by `.github/workflows/deploy.yml`. Every push to `main` runs the tests first;
+  if any fails, nothing is deployed. Installed copies notice the new version, show an "Update now" banner and reload into it.
+  **To release:** bump `VERSION` in `app.js` and `CACHE` in `sw.js` (same number), add an entry to `CHANGES` in `app.js` and to
+  `CHANGELOG.md` (a test fails if they disagree), then push.
 * **Worker:** see `worker/README.md` (`wrangler deploy`; the private VAPID key is a Worker secret and is never committed).
 
 ## Conventions
@@ -77,7 +101,7 @@ Service workers cache aggressively: while developing, unregister the worker (Dev
 * Comments explain *why*, and every function has a short description. Keep `app.js` sections in order:
   constants & state → dates → plan logic → ui state → decoration → helpers → safety copies → views → charts → events → push →
   cloud backup → local reminders → theme → boot.
-* No dependencies and no build step on purpose: the app should stay easy to read, host and trust.
+* No runtime dependencies and no build step on purpose: the app should stay easy to read, host and trust. (`jsdom` is used only by the tests.)
 
 ## Not medical advice
 

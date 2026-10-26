@@ -7,8 +7,8 @@
 <!-- Colors the phone's status/address bar. app.js updates this when the theme changes. -->
 <meta name="theme-color" content="#cfe5d3">
 <meta name="description" content="A gentle, private caffeine taper tracker.">
-<!-- Runs before the page paints so a dark-mode user never sees a flash of the light theme. Mirrors applyTheme() in app.js. -->
-<script>try{var s=JSON.parse(localStorage.getItem('gentle-taper-v1')),p=s&&s.settings&&s.settings.theme||'auto';document.documentElement.dataset.theme=p==='dark'||(p==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light'}catch(e){}</script>
+<!-- Runs before the page paints so a dark-mode user never sees a flash of the light theme. Mirrors applyTheme() in app.js (theme and text size). -->
+<script>try{var s=JSON.parse(localStorage.getItem('gentle-taper-v1')),p=s&&s.settings&&s.settings.theme||'auto';document.documentElement.dataset.theme=p==='dark'||(p==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';document.documentElement.dataset.text=s&&s.settings&&s.settings.textSize||'normal'}catch(e){}</script>
 <!-- PWA: lets the site be installed to the home screen (name, icons, shortcuts: see manifest.webmanifest). -->
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
@@ -32,9 +32,21 @@
 <!-- Header: vine strip, app title, and the subtitle app.js fills in ("Day 3 of 28", etc.). -->
 <header class="top">
   <div class="top-vine" aria-hidden="true"></div>
+  <!-- Header buttons (handled by data-act in app.js): Undo / Redo on the left, Search / Help on the right. -->
+  <div class="hbar hbar-l">
+    <button class="hbtn" id="hUndo" data-act="undo" aria-label="Nothing to undo" title="Nothing to undo" disabled><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button class="hbtn" id="hRedo" data-act="redo" aria-label="Nothing to redo" title="Nothing to redo" disabled><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+  </div>
+  <div class="hbar hbar-r">
+    <button class="hbtn" data-act="gosearch" aria-label="Search" title="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg></button>
+    <button class="hbtn" data-act="gohelp" aria-label="Help" title="Help"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1.9-1.1 1.8"/><path d="M12 17h.01"/></svg></button>
+  </div>
   <h1 id="title">Gentle Taper</h1>
   <p id="subtitle"></p>
 </header>
+
+<!-- Notices that update by themselves: new version ready, offline, storage nearly full, couldn't save (see paintBanners() in app.js). -->
+<div id="banner" aria-live="polite"></div>
 
 <!-- The active tab is drawn into this element by render() in app.js. -->
 <main id="app"></main>
@@ -56,7 +68,9 @@
 </nav>
 
 <!-- Pop-up message area (a live region, so screen readers announce it). -->
-<div id="toast" role="status"></div>
+<div id="toast" role="status"><span id="toastMsg"></span><button id="toastBtn" data-act="toastact" hidden></button></div>
+<!-- The app-lock screen (filled in by app.js only when a PIN or password is set; covers everything while locked). -->
+<div id="lock" hidden></div>
 <!-- All app logic. Placed at the end so the elements above exist when it runs. -->
 <script src="app.js"></script>
 </body>

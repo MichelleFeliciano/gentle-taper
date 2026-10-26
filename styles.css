@@ -63,6 +63,9 @@
 /* Base: predictable sizing, no tap flash, and the page background. */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html { background: var(--paper); }
+/* Text size setting (Settings > Appearance): everything is in rem, so changing the root size scales the whole app. */
+html[data-text="large"] { font-size: 112.5%; }
+html[data-text="xl"] { font-size: 125%; }
 /* Page: soft gradients behind everything; bottom padding leaves room for the fixed tab bar and the iPhone home-indicator area. */
 body {
   margin: 0;
@@ -95,6 +98,17 @@ header.top {
   padding: 0 30px 6px; text-align: center;
 }
 .top-vine { height: 34px; background-image: var(--vine-h); background-size: 307px 46px; background-repeat: repeat-x; background-position: center 0; opacity: .85; margin: 0 -14px; }
+/* Header buttons: Undo / Redo on the left, Search / Help on the right, sitting over the vine strip. */
+.hbar { position: absolute; top: 2px; display: flex; gap: 4px; z-index: 2; }
+.hbar-l { left: max(8px, env(safe-area-inset-left)); }
+.hbar-r { right: max(8px, env(safe-area-inset-right)); }
+.hbtn {
+  width: 44px; height: 44px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--card); color: var(--sage-deep);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+}
+.hbtn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.hbtn:disabled { opacity: .4; }
+.hbtn:active { transform: scale(.94); }
 header.top h1 { font-family: var(--font-head); font-weight: 600; font-size: 1.75rem; margin: 2px 0 0; color: var(--sage-deep); letter-spacing: .2px; }
 header.top p { margin: 2px 0 0; color: var(--ink-soft); font-size: 0.875rem; min-height: 20px; }
 
@@ -250,6 +264,10 @@ details.card[open] summary { margin-bottom: 8px; }
   opacity: 0; pointer-events: none; transition: all .25s; z-index: 10; max-width: 86vw; text-align: center;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+/* A pop-up with an action button (Undo) can be tapped. */
+#toast.act { pointer-events: auto; display: flex; align-items: center; gap: 12px; border-radius: 18px; }
+#toast button { border: 0; background: rgba(255, 255, 255, .22); color: #fff; font: inherit; font-weight: 700; padding: 8px 14px; border-radius: 999px; min-height: 40px; cursor: pointer; }
+#toast button[hidden] { display: none; }
 
 /* Wider screens: slightly wider vines. */
 @media (min-width: 560px) { .vine { width: 60px; background-size: 60px 400px; } }
@@ -264,7 +282,7 @@ details.card[open] summary { margin-bottom: 8px; }
 .preset .pmg { width: 74px; flex: none; }
 
 /* Free-text inputs (the number/time inputs are styled above). */
-input[type=text] {
+input[type=text], input[type=password] {
   width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink);
   border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 12px;
 }
@@ -320,3 +338,59 @@ details.more summary { cursor: pointer; padding: 10px 0; color: var(--sage-deep)
 .btn.sm { min-height: 40px; padding: 8px 12px; font-size: .9rem; }
 .preset.acts .btn { flex: 1; }
 .btn:disabled { opacity: .4; }
+
+/* Notices above the page (update ready, offline, storage warning, couldn't save). They sit in the same column as the content. */
+#banner { position: relative; z-index: 2; max-width: 480px; margin: 0 auto; padding: 0 max(28px, env(safe-area-inset-right)) 0 max(28px, env(safe-area-inset-left)); }
+.banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 8px 0 0; padding: 10px 14px; border-radius: 18px;
+  background: var(--sage-bg); border: 1.5px solid var(--sage); color: var(--ink); font-size: 0.875rem;
+}
+.banner.warn { background: var(--warn-bg); border-color: var(--warn-bd); color: var(--warn-ink); }
+.banner.bad { background: var(--mod-bg); border-color: var(--mod-bd); color: var(--mod-ink); }
+.banner .btn { flex: none; }
+
+/* Empty screens: a short message and the obvious next step. */
+.empty { text-align: center; padding: 6px 0 2px; }
+.empty .btn { margin-top: 4px; }
+/* Numbered steps in the welcome card. */
+.steps { margin: 6px 0 12px; padding-left: 22px; }
+.steps li { margin: 4px 0; }
+
+/* Collapsible blocks inside a Settings card ("What's new") and plain collapsible cards (History, Recently deleted, Help topics). */
+details.fold { margin-top: 10px; }
+details.fold > summary, details.card.help > summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+details.card.help { padding-top: 6px; padding-bottom: 8px; }
+details.card.help p { margin: 6px 0; }
+
+/* Settings check: one row per item with a mark that doesn't rely on colour alone. */
+.check { list-style: none; margin: 0; padding: 0; }
+.check li { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
+.check li:first-child { border-top: 0; }
+.check small { display: block; color: var(--ink-soft); font-size: 0.8125rem; }
+.check .dot { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.8125rem; background: var(--sage-bg); color: var(--sage-deep); }
+.check .warn .dot { background: var(--warn-bg); color: var(--warn-ink); border: 1.5px solid var(--warn-bd); }
+.check .off .dot { background: var(--paper); color: var(--ink-soft); border: 1.5px solid var(--line); }
+/* Text for screen readers only. */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Search: one tappable row per result, with a small label for what kind it is. */
+input[type=search] { width: 100%; font-family: var(--font-body); font-size: 1rem; color: var(--ink); border: 1.5px solid var(--line); background: var(--cream); border-radius: 14px; padding: 11px 12px; min-height: 46px; }
+.results { margin-top: 10px; }
+.sres {
+  display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; font: inherit; color: var(--ink); background: var(--cream);
+  border: 1.5px solid var(--line); border-radius: 16px; padding: 10px 12px; margin: 6px 0; min-height: 52px; cursor: pointer;
+}
+.sres .sk { flex: none; min-width: 70px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--lav-ink); }
+.sres .st { min-width: 0; }
+.sres .st b { display: block; overflow-wrap: anywhere; }
+.sres small { display: block; color: var(--ink-soft); overflow-wrap: anywhere; }
+
+/* The app-lock screen: covers everything. While body.locked, nothing else is shown at all. */
+#lock { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--paper); overflow-y: auto; }
+#lock[hidden] { display: none; }
+.lockbox { width: 100%; max-width: 360px; background: var(--card); border: 1.5px solid var(--line); border-radius: var(--radius); padding: 22px 18px; box-shadow: 0 6px 18px -12px var(--shadow); }
+.lockbox h2 { font-family: var(--font-head); font-weight: 500; margin: 0 0 8px; }
+body.locked > *:not(#lock):not(script) { display: none !important; }
+/* "What's new" (a collapsible block inside a card) gets a +/- marker like the other collapsible cards. */
+details.fold > summary::after { content: '+'; margin-left: auto; font-size: 1.25rem; color: var(--ink-soft); }
+details.fold[open] > summary::after { content: '−'; }
